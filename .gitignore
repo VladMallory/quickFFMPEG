@@ -61,9 +61,8 @@ private.key
 !.vscode/settings.json
 *.code-workspace
 
-# Другие редакторы
-.swp
-*~
+
+./ffmpegMacos
 
 # ##########################################
 # 7. Мусор операционных систем 
