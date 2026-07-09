@@ -89,6 +89,12 @@ func NewConfig() *config {
 		true, "переменная частота кадров (VFR) через scene detection",
 	)
 
+	flag.IntVar(
+		&cfg.FilmGrain,
+		"grain", 0,
+		"уровень синтеза зерна для AV1 (от 0 до 50, 0 = выкл)",
+	)
+
 	flag.Parse()
 
 	if cfg.Codec != "av1" && cfg.Codec != "265" {
@@ -115,12 +121,6 @@ func NewConfig() *config {
 			cfg.Preset = "1"
 		}
 	}
-
-	flag.IntVar(
-		&cfg.FilmGrain,
-		"grain", 0,
-		"уровень синтеза зерна для AV1 (от 0 до 50, 0 = выкл)",
-	)
 
 	return cfg
 }
@@ -177,8 +177,6 @@ func main() {
 		// Формируем имя выходного файла (меняем расширение на .mp4)
 		baseName := strings.TrimSuffix(file.Name(), filepath.Ext(file.Name()))
 		outputPath := filepath.Join(compressedDir, baseName+".mp4")
-
-		// ... (код до args = []string{...} остается как был)
 
 		args := []string{
 			"-i", inputPath,
