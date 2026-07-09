@@ -131,13 +131,10 @@ func NewConfig() *config {
 	return cfg
 }
 
-var BuildTime = "unknown"
-
 func main() {
-	fmt.Println("Build time:", BuildTime)
-	t, err := time.Parse(time.RFC3339, BuildTime)
-	if err == nil {
-		fmt.Println("Возраст билда:", time.Since(t).Round(time.Second))
+	if fi, err := os.Stat(os.Args[0]); err == nil {
+		fmt.Println("Build time:", fi.ModTime().Format(time.RFC3339))
+		fmt.Println("Возраст билда:", time.Since(fi.ModTime()).Round(time.Second))
 	}
 
 	cfg := NewConfig()
