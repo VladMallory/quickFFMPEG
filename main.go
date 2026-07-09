@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Допустимые расширения файлов
@@ -30,14 +31,19 @@ type fileStat struct {
 	resolutionAfter  string
 }
 
+// config описывает флаги для приложения.
 type config struct {
-	Codec  string `json:"codec"`
-	Path   string `json:"path"`
-	CRF    string `json:"crf"`
-	Resize int    `json:"resize"`
-	Preset string `json:"preset"`
-	MaxFps int    `json:"maxFps"`
-	PerFps bool   `json:"perFps"`
+	Codec           string `json:"codec"`
+	Path            string `json:"path"`
+	CRF             string `json:"crf"`
+	Resize          int    `json:"resize"`
+	Preset          string `json:"preset"`
+	AudioCodec      string `json:"audio_codec"`
+	AudioCodecValue string `json:"audio_codecValue"`
+	AudioBitrate    string `json:"audio_bitrate"`
+	MaxFps          int    `json:"maxFps"`
+	PerFps          bool   `json:"perFps"`
+	FilmGrain       int    `json:"film_grain"`
 }
 
 func NewConfig() *config {
@@ -68,6 +74,11 @@ func NewConfig() *config {
 		"", "пресет скорости/качества",
 	)
 
+	flag.StringVar(
+		&cfg.AudioCodec, "audio",
+		"opus", "аудиокодек aac или opus",
+	)
+
 	flag.IntVar(
 		&cfg.MaxFps, "maxFps",
 		24, "максимальный FPS (0 = без лимита)",
@@ -84,6 +95,19 @@ func NewConfig() *config {
 		log.Fatalln("неизвестный кодек")
 	}
 
+	if cfg.AudioCodec != "aac" && cfg.AudioCodec != "opus" {
+		log.Fatalln("неизвестный аудиокодек")
+	}
+
+	switch cfg.AudioCodec {
+	case "opus":
+		cfg.AudioCodecValue = "libopus"
+		cfg.AudioBitrate = "96k"
+	case "aac":
+		cfg.AudioCodecValue = "aac"
+		cfg.AudioBitrate = "128k"
+	}
+
 	if cfg.Preset == "" {
 		if cfg.Codec == "265" {
 			cfg.Preset = "slow"
@@ -92,10 +116,24 @@ func NewConfig() *config {
 		}
 	}
 
+	flag.IntVar(
+		&cfg.FilmGrain,
+		"grain", 0,
+		"уровень синтеза зерна для AV1 (от 0 до 50, 0 = выкл)",
+	)
+
 	return cfg
 }
 
+var BuildTime = "unknown"
+
 func main() {
+	fmt.Println("Build time:", BuildTime)
+	t, err := time.Parse(time.RFC3339, BuildTime)
+	if err == nil {
+		fmt.Println("Возраст билда:", time.Since(t).Round(time.Second))
+	}
+
 	cfg := NewConfig()
 
 	// Создаем папку для сжатых файлов
@@ -140,31 +178,31 @@ func main() {
 		baseName := strings.TrimSuffix(file.Name(), filepath.Ext(file.Name()))
 		outputPath := filepath.Join(compressedDir, baseName+".mp4")
 
+		// ... (код до args = []string{...} остается как был)
+
 		args := []string{
-			// "-y"
 			"-i", inputPath,
 			"-crf", cfg.CRF,
 		}
 
+		// 1. Кодеки
 		switch cfg.Codec {
 		case "265":
-			args = append(
-				args,
-				"-c:v", "libx265",
-				"-tag:v", "hvc1",
-			)
+			args = append(args, "-c:v", "libx265", "-tag:v", "hvc1")
 		case "av1":
-			args = append(
-				args, "-c:v", "libsvtav1",
-			)
+			args = append(args, "-c:v", "libsvtav1", "-g", "240")
+			svtParams := "tune=0"
+			if cfg.FilmGrain > 0 {
+				svtParams += fmt.Sprintf(":film-grain=%d", cfg.FilmGrain)
+			}
+			args = append(args, "-svtav1-params", svtParams)
 		}
 
+		// 2. Видео-фильтры (накапливаем их)
 		var filters []string
-
 		if cfg.MaxFps > 0 && !cfg.PerFps {
 			args = append(args, "-r", strconv.Itoa(cfg.MaxFps))
 		}
-
 		if cfg.PerFps {
 			args = append(args, "-vsync", "vfr")
 			if cfg.MaxFps > 0 {
@@ -172,24 +210,38 @@ func main() {
 			}
 			filters = append(filters, "mpdecimate")
 		}
-
 		if cfg.Resize > 0 {
 			box := cfg.Resize * 16 / 9
 			filters = append(filters, fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease", box, box))
 		}
-
 		if len(filters) > 0 {
 			args = append(args, "-vf", strings.Join(filters, ","))
 		}
 
+		// 3. Пиксельный формат (10-бит для AV1 и H265)
+		pixFmt := "yuv420p"
+		if cfg.Codec == "av1" || cfg.Codec == "265" {
+			pixFmt = "yuv420p10le"
+		}
+		args = append(args, "-pix_fmt", pixFmt, "-preset", cfg.Preset)
+
+		// 4. Аудио (один раз!)
 		args = append(
 			args,
-			"-pix_fmt", "yuv420p",
-			"-preset", cfg.Preset,
-			"-c:a", "aac",
-			"-b:a", "128k",
-			outputPath,
+			"-c:a", cfg.AudioCodecValue,
+			"-b:a", cfg.AudioBitrate,
 		)
+		if cfg.AudioCodecValue == "libopus" {
+			args = append(
+				args,
+				"-vbr", "on",
+				"-compression_level", "10",
+				"-af", "silenceremove=start_periods=0:stop_periods=0:start_threshold=-60dB",
+			)
+		}
+
+		// 5. Выходной файл
+		args = append(args, outputPath)
 
 		cmd := exec.Command("ffmpeg", args...)
 

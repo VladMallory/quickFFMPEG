@@ -62,7 +62,7 @@ private.key
 *.code-workspace
 
 
-./ffmpegMacos
+./quickFFmpeg
 
 # ##########################################
 # 7. Мусор операционных систем 
