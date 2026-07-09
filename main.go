@@ -144,6 +144,9 @@ func main() {
 		}
 	}
 	fmt.Println("Build time:", buildTime)
+	if t, err := time.Parse(time.RFC3339, buildTime); err == nil {
+		fmt.Println("Возраст билда:", time.Since(t).Round(time.Second))
+	}
 
 	cfg := NewConfig()
 
