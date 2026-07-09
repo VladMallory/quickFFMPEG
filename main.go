@@ -134,7 +134,7 @@ func NewConfig() *config {
 func main() {
 	buildTime := "unknown"
 	if exe, err := os.Executable(); err == nil {
-		if fi, err := os.Stat(exe); err == nil && !fi.ModTime().IsZero() {
+		if fi, err := os.Stat(exe); err == nil && fi.ModTime().Year() > 1970 {
 			buildTime = fi.ModTime().Format(time.RFC3339)
 		}
 	}
