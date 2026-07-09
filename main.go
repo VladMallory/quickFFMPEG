@@ -131,11 +131,16 @@ func NewConfig() *config {
 	return cfg
 }
 
+var BuildTime = "unknown"
+
 func main() {
-	buildTime := "unknown"
-	if exe, err := os.Executable(); err == nil {
-		if fi, err := os.Stat(exe); err == nil && fi.ModTime().Year() > 1970 {
-			buildTime = fi.ModTime().Format(time.RFC3339)
+	buildTime := BuildTime
+	if t, err := time.Parse(time.RFC3339, buildTime); err != nil || t.Year() <= 1970 {
+		buildTime = "unknown"
+		if exe, err := os.Executable(); err == nil {
+			if fi, err := os.Stat(exe); err == nil && fi.ModTime().Year() > 1970 {
+				buildTime = fi.ModTime().Format(time.RFC3339)
+			}
 		}
 	}
 	fmt.Println("Build time:", buildTime)
