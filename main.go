@@ -44,6 +44,7 @@ type config struct {
 	MaxFps          int    `json:"maxFps"`
 	PerFps          bool   `json:"perFps"`
 	FilmGrain       int    `json:"film_grain"`
+	BitDepth        int    `json:"bit_depth"`
 }
 
 func NewConfig() *config {
@@ -93,6 +94,11 @@ func NewConfig() *config {
 		&cfg.FilmGrain,
 		"grain", 0,
 		"уровень синтеза зерна для AV1 (от 0 до 50, 0 = выкл)",
+	)
+
+	flag.IntVar(
+		&cfg.BitDepth, "bit",
+		10, "битность видео: 8 или 10",
 	)
 
 	flag.Parse()
@@ -218,7 +224,7 @@ func main() {
 
 		// 3. Пиксельный формат (10-бит для AV1 и H265)
 		pixFmt := "yuv420p"
-		if cfg.Codec == "av1" || cfg.Codec == "265" {
+		if cfg.BitDepth == 10 {
 			pixFmt = "yuv420p10le"
 		}
 		args = append(args, "-pix_fmt", pixFmt, "-preset", cfg.Preset)
