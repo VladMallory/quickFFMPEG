@@ -132,10 +132,13 @@ func NewConfig() *config {
 }
 
 func main() {
-	if fi, err := os.Stat(os.Args[0]); err == nil {
-		fmt.Println("Build time:", fi.ModTime().Format(time.RFC3339))
-		fmt.Println("Возраст билда:", time.Since(fi.ModTime()).Round(time.Second))
+	buildTime := "unknown"
+	if exe, err := os.Executable(); err == nil {
+		if fi, err := os.Stat(exe); err == nil && !fi.ModTime().IsZero() {
+			buildTime = fi.ModTime().Format(time.RFC3339)
+		}
 	}
+	fmt.Println("Build time:", buildTime)
 
 	cfg := NewConfig()
 
