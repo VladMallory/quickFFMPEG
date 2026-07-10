@@ -248,7 +248,7 @@ func main() {
 				args,
 				"-vbr", "on",
 				"-compression_level", "10",
-				"-af", "silenceremove=start_periods=0:stop_periods=0:start_threshold=-60dB",
+				// "-af", "silenceremove=start_periods=0:stop_periods=0:start_threshold=-60dB",
 			)
 		}
 
