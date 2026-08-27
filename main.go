@@ -156,6 +156,8 @@ func main() {
 		log.Fatalf("Не удалось создать папку для сжатых файлов: %v", err)
 	}
 
+	saveLogFile(*cfg, compressedDir)
+
 	// Читаем файлы в директории
 	files, err := os.ReadDir(cfg.Path)
 	if err != nil {
@@ -297,20 +299,22 @@ func main() {
 				stat.sizeAfter, stat.resolutionAfter,
 			)
 		}
+	}
+	result, _ := json.MarshalIndent(cfg, "", " ")
+	fmt.Println(string(result))
+}
 
-		jsonByte, err := json.MarshalIndent(cfg, "", " ")
-		if err != nil {
-			return
-		}
+func saveLogFile(cfg config, compressedDir string) {
+	jsonByte, err := json.MarshalIndent(cfg, "", " ")
+	if err != nil {
+		return
+	}
 
-		fmt.Println("Настройки: \n", string(jsonByte))
-
-		// fmt.Printf("Настройки: %+v", cfg)
-
-		// fmt.Printf(
-		// 	"Настройки: \ncfg: %s\npreset: %s\nresize: %d\ncodec: %s\nmaxFps: %d\nperFps: %t",
-		// 	cfg.crf, cfg.preset, cfg.resize, cfg.codec, cfg.maxFps, cfg.perFps,
-		// )
+	settingsPath := filepath.Join(compressedDir, "settings.txt")
+	if err := os.WriteFile(settingsPath, jsonByte, 0o644); err != nil {
+		log.Printf("Ошибка сохранения настроек: %v", err)
+	} else {
+		fmt.Println("Настройки сохранены в:", settingsPath)
 	}
 }
 
