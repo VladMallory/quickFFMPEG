@@ -218,7 +218,7 @@ func main() {
 			args = append(args, "-r", strconv.Itoa(cfg.MaxFps))
 		}
 		if cfg.PerFps {
-			args = append(args, "-vsync", "vfr")
+			args = append(args, "-fps_mode", "vfr")
 			if cfg.MaxFps > 0 {
 				filters = append(filters, fmt.Sprintf("fps=%d", cfg.MaxFps))
 			}
