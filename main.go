@@ -226,7 +226,10 @@ func main() {
 		}
 		if cfg.Resize > 0 {
 			box := cfg.Resize * 16 / 9
-			filters = append(filters, fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease", box, box))
+			filters = append(
+				filters,
+				fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease", box, box),
+			)
 		}
 		if len(filters) > 0 {
 			args = append(args, "-vf", strings.Join(filters, ","))
