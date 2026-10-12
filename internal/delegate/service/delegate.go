@@ -105,6 +105,12 @@ func (s DelegateService) DelegateAll(
 
 	var stats []converterdomain.FileStat
 
+	runID, err := s.cipher.RandHex(4)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintln(s.stdout, "Прогон:", runID)
+
 	for i, name := range names {
 		inputPath := filepath.Join(cfg.Path, name)
 
@@ -117,7 +123,7 @@ func (s DelegateService) DelegateAll(
 			continue
 		}
 
-		stat, err := s.delegateFile(ctx, cfg, dir, tmpDir, compressedDir, i, name, inputPath, onEncoded)
+		stat, err := s.delegateFile(ctx, cfg, dir, tmpDir, compressedDir, runID, i, name, inputPath, onEncoded)
 		if err != nil {
 			return nil, err
 		}
@@ -179,6 +185,7 @@ func (s DelegateService) delegateFile(
 	ctx context.Context,
 	cfg converterdomain.Config,
 	dir, tmpDir, compressedDir string,
+	runID string,
 	i int,
 	name, inputPath string,
 	onEncoded func(outputPath string),
@@ -197,7 +204,7 @@ func (s DelegateService) delegateFile(
 	dec := converterdomain.Crypt{Key: keys[0], IV: keys[1]}
 	enc := converterdomain.Crypt{Key: keys[2], IV: keys[3]}
 
-	job := fmt.Sprintf("job%03d.enc", i)
+	job := fmt.Sprintf("%s-job%03d.enc", runID, i)
 	encLocal := filepath.Join(tmpDir, job)
 	if err := s.cipher.EncryptFile(inputPath, encLocal, dec.Key, dec.IV); err != nil {
 		return converterdomain.FileStat{}, fmt.Errorf("не удалось зашифровать файл: %v", err)
