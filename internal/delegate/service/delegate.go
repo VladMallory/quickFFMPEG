@@ -33,6 +33,7 @@ type RemoteShell interface {
 	RunJob(ctx context.Context, workdir string, env map[string]string, bin string, args []string) error
 	EnsureFFmpeg(ctx context.Context) error
 	Sha256(ctx context.Context, remote string) (string, error)
+	Load(ctx context.Context) (delegatedomain.WorkerLoad, error)
 }
 
 type SourceStore interface {
@@ -99,6 +100,10 @@ func (s DelegateService) DelegateAll(
 	if cfg.Farm && len(workers) < 2 {
 		return nil, fmt.Errorf("для --farm нужно минимум два профиля в --security")
 	}
+
+	tickCtx, stopTick := context.WithCancel(ctx)
+	defer stopTick()
+	go s.loadTicker(tickCtx, s.shells, workers)
 
 	type prepared struct {
 		idx int
@@ -555,4 +560,53 @@ func (s DelegateService) freshKeys() ([4]string, error) {
 		keys[i] = k
 	}
 	return keys, nil
+}
+
+func (s DelegateService) loadTicker(
+	ctx context.Context,
+	shells []RemoteShell,
+	workers []delegatedomain.WorkerProfile,
+) {
+	t := time.NewTicker(10 * time.Second)
+	defer t.Stop()
+	s.reportLoad(ctx, shells, workers)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.reportLoad(ctx, shells, workers)
+		}
+	}
+}
+
+func (s DelegateService) reportLoad(
+	ctx context.Context,
+	shells []RemoteShell,
+	workers []delegatedomain.WorkerProfile,
+) {
+	type res struct {
+		idx  int
+		load delegatedomain.WorkerLoad
+		err  error
+	}
+	ch := make(chan res, len(workers))
+	for k := range workers {
+		go func(k int) {
+			load, err := shells[k].Load(ctx)
+			ch <- res{idx: k, load: load, err: err}
+		}(k)
+	}
+	lines := make([]string, len(workers))
+	for range workers {
+		r := <-ch
+		if r.err != nil {
+			lines[r.idx] = workers[r.idx].Name + ": ?"
+		} else {
+			lines[r.idx] = fmt.Sprintf(
+				"%s: %s/%d", workers[r.idx].Name, r.load.One, r.load.Cores,
+			)
+		}
+	}
+	fmt.Fprintf(s.stdout, "Нагрузка: %s\n", strings.Join(lines, " | "))
 }

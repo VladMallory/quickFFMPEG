@@ -17,3 +17,16 @@ func TestFFmpegMajor(t *testing.T) {
 		}
 	}
 }
+
+func TestParseLoad(t *testing.T) {
+	got, err := parseLoad("0.22 0.10 0.04 1/234 5678\n12\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.One != "0.22" || got.Cores != 12 {
+		t.Fatalf("got %+v", got)
+	}
+	if _, err := parseLoad(""); err == nil {
+		t.Fatal("жди ошибку на пустом выводе")
+	}
+}

@@ -16,6 +16,11 @@ type WorkerProfile struct {
 	Slots int    `json:"slots"`
 }
 
+type WorkerLoad struct {
+	One   string
+	Cores int
+}
+
 func AssignSegments(sizes []int64, powers []int) []int {
 	assign := make([]int, len(sizes))
 	loads := make([]float64, len(powers))

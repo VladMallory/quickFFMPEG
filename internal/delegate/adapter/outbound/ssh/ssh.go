@@ -254,6 +254,30 @@ func (a *Adapter) Sha256(ctx context.Context, remote string) (string, error) {
 	})
 }
 
+func (a *Adapter) Load(ctx context.Context) (delegatedomain.WorkerLoad, error) {
+	out, err := a.sshOutput(ctx, "cat /proc/loadavg && nproc")
+	if err != nil {
+		return delegatedomain.WorkerLoad{}, err
+	}
+	return parseLoad(out)
+}
+
+func parseLoad(out string) (delegatedomain.WorkerLoad, error) {
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) < 2 {
+		return delegatedomain.WorkerLoad{}, fmt.Errorf("пустой вывод нагрузки")
+	}
+	fields := strings.Fields(lines[0])
+	if len(fields) == 0 {
+		return delegatedomain.WorkerLoad{}, fmt.Errorf("пустой вывод нагрузки")
+	}
+	var cores int
+	if _, err := fmt.Sscanf(strings.TrimSpace(lines[len(lines)-1]), "%d", &cores); err != nil {
+		return delegatedomain.WorkerLoad{}, err
+	}
+	return delegatedomain.WorkerLoad{One: fields[0], Cores: cores}, nil
+}
+
 func retry(attempts int, fn func() error) error {
 	_, err := retryValue(attempts, func() (struct{}, error) {
 		return struct{}{}, fn()
