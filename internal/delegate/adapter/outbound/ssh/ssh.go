@@ -262,6 +262,13 @@ func (a *Adapter) Load(ctx context.Context) (delegatedomain.WorkerLoad, error) {
 	return parseLoad(out)
 }
 
+func (a *Adapter) KillJobs(ctx context.Context) error {
+	if err := a.runQuiet(ctx, "pkill -f \"quickffmpeg --crypt-i[n]\""); err != nil {
+		return err
+	}
+	return a.runQuiet(ctx, "pkill -f \"crypto:fil[e]://\"")
+}
+
 func parseLoad(out string) (delegatedomain.WorkerLoad, error) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 	if len(lines) < 2 {

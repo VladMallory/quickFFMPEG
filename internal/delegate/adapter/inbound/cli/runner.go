@@ -55,6 +55,7 @@ func (r *Runner) Run(ctx context.Context) {
 		fmt.Fprintf(r.stdout, "✅ Файл успешно сохранен в: %s\n", outputPath)
 	})
 	if err != nil {
+		r.service.CancelRemote()
 		log.Fatal(err)
 	}
 

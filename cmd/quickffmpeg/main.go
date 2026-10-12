@@ -4,8 +4,10 @@ import (
 	"context"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/VladMallory/quickFFMPEG/internal/config"
 	convertercli "github.com/VladMallory/quickFFMPEG/internal/converter/adapter/inbound/cli"
@@ -28,7 +30,9 @@ type app struct {
 }
 
 func main() {
-	newApp().run(context.Background())
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	newApp().run(ctx)
 }
 
 func newApp() app {

@@ -34,6 +34,7 @@ type RemoteShell interface {
 	EnsureFFmpeg(ctx context.Context) error
 	Sha256(ctx context.Context, remote string) (string, error)
 	Load(ctx context.Context) (delegatedomain.WorkerLoad, error)
+	KillJobs(ctx context.Context) error
 }
 
 type SourceStore interface {
@@ -560,6 +561,15 @@ func (s DelegateService) freshKeys() ([4]string, error) {
 		keys[i] = k
 	}
 	return keys, nil
+}
+
+func (s DelegateService) CancelRemote() {
+	fmt.Fprintln(s.stdout, "Останавливаю воркеры...")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	for _, shell := range s.shells {
+		_ = shell.KillJobs(ctx)
+	}
 }
 
 func (s DelegateService) loadTicker(
