@@ -91,6 +91,11 @@ func Load() domain.Config {
 		"", "путь к workers.json (по умолчанию ./workers.json или каталог конфигов)",
 	)
 
+	flag.BoolVar(
+		&cfg.Quiet, "quiet",
+		false, "тихо: глушить вывод ffmpeg, оставить нагрузку и итоги",
+	)
+
 	flag.Parse()
 
 	if err := cfg.ApplyDefaults(); err != nil {

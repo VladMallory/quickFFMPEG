@@ -255,7 +255,7 @@ func (a *Adapter) Sha256(ctx context.Context, remote string) (string, error) {
 }
 
 func (a *Adapter) Load(ctx context.Context) (delegatedomain.WorkerLoad, error) {
-	out, err := a.sshOutput(ctx, "cat /proc/loadavg && nproc")
+	out, err := a.sshOutput(ctx, "grep '^cpu ' /proc/stat; sleep 1; grep '^cpu ' /proc/stat; nproc")
 	if err != nil {
 		return delegatedomain.WorkerLoad{}, err
 	}
@@ -271,18 +271,68 @@ func (a *Adapter) KillJobs(ctx context.Context) error {
 
 func parseLoad(out string) (delegatedomain.WorkerLoad, error) {
 	lines := strings.Split(strings.TrimSpace(out), "\n")
-	if len(lines) < 2 {
-		return delegatedomain.WorkerLoad{}, fmt.Errorf("пустой вывод нагрузки")
+	if len(lines) < 3 {
+		return delegatedomain.WorkerLoad{}, fmt.Errorf("короткий вывод нагрузки")
 	}
-	fields := strings.Fields(lines[0])
-	if len(fields) == 0 {
-		return delegatedomain.WorkerLoad{}, fmt.Errorf("пустой вывод нагрузки")
-	}
-	var cores int
-	if _, err := fmt.Sscanf(strings.TrimSpace(lines[len(lines)-1]), "%d", &cores); err != nil {
+	pct, err := cpuUsage(lines[0], lines[1])
+	if err != nil {
 		return delegatedomain.WorkerLoad{}, err
 	}
-	return delegatedomain.WorkerLoad{One: fields[0], Cores: cores}, nil
+	cores, err := strconv.Atoi(strings.TrimSpace(lines[2]))
+	if err != nil {
+		return delegatedomain.WorkerLoad{}, err
+	}
+	return delegatedomain.WorkerLoad{Pct: pct, Cores: cores}, nil
+}
+
+func cpuUsage(first, second string) (int, error) {
+	idleA, totalA, err := cpuTotals(first)
+	if err != nil {
+		return 0, err
+	}
+	idleB, totalB, err := cpuTotals(second)
+	if err != nil {
+		return 0, err
+	}
+	return cpuPct(idleA, totalA, idleB, totalB), nil
+}
+
+func cpuTotals(line string) (uint64, uint64, error) {
+	fields := strings.Fields(line)
+	if len(fields) < 5 || fields[0] != "cpu" {
+		return 0, 0, fmt.Errorf("битая строка cpu")
+	}
+	nums := make([]uint64, 0, len(fields)-1)
+	for _, f := range fields[1:] {
+		n, err := strconv.ParseUint(f, 10, 64)
+		if err != nil {
+			return 0, 0, err
+		}
+		nums = append(nums, n)
+	}
+	var total uint64
+	for _, n := range nums {
+		total += n
+	}
+	idle := nums[3]
+	if len(nums) > 4 {
+		idle += nums[4]
+	}
+	return idle, total, nil
+}
+
+func cpuPct(idleA, totalA, idleB, totalB uint64) int {
+	if totalB <= totalA {
+		return 0
+	}
+	pct := 100 * (1 - float64(idleB-idleA)/float64(totalB-totalA))
+	if pct < 0 {
+		return 0
+	}
+	if pct > 100 {
+		return 100
+	}
+	return int(pct)
 }
 
 func retry(attempts int, fn func() error) error {

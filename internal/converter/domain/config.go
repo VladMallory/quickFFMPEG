@@ -19,6 +19,7 @@ type Config struct {
 	Farm            bool   `json:"farm"`
 	FarmSeg         int    `json:"farm_seg"`
 	Workers         string `json:"workers"`
+	Quiet           bool   `json:"quiet"`
 }
 
 func (c *Config) ApplyDefaults() error {

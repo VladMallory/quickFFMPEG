@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -55,10 +56,17 @@ func newApp() app {
 	}
 }
 
+func childOut(cfg converterdomain.Config) io.Writer {
+	if cfg.Quiet {
+		return io.Discard
+	}
+	return os.Stdout
+}
+
 func setupConverter(cfg converterdomain.Config) func(context.Context) {
 	execRunner := execplatform.New()
 
-	encoder := ffmpeg.NewEncoder(execRunner, os.Stdout, os.Stderr)
+	encoder := ffmpeg.NewEncoder(execRunner, childOut(cfg), childOut(cfg))
 	prober := ffmpeg.NewProber(execRunner)
 	store := fs.New()
 
@@ -76,7 +84,7 @@ func setupWorker(cfg converterdomain.Config) func(context.Context) {
 
 	execRunner := execplatform.New()
 
-	encoder := ffmpeg.NewCryptoEncoder(execRunner, os.Stdout, os.Stderr, dec, enc)
+	encoder := ffmpeg.NewCryptoEncoder(execRunner, childOut(cfg), childOut(cfg), dec, enc)
 	prober := ffmpeg.NewCryptoProber(execRunner, dec, enc)
 	store := fs.New()
 
@@ -126,14 +134,14 @@ func setupDelegate(cfg converterdomain.Config) func(context.Context) {
 		}
 		workers = append(workers, worker)
 		if worker.Local {
-			shells = append(shells, localadapter.New(os.Stdout, os.Stderr))
+			shells = append(shells, localadapter.New(childOut(cfg), childOut(cfg)))
 		} else {
-			shells = append(shells, sshadapter.New(worker, execRunner, os.Stdout, os.Stderr))
+			shells = append(shells, sshadapter.New(worker, execRunner, childOut(cfg), childOut(cfg)))
 		}
 	}
 
 	prober := ffmpeg.NewProber(execRunner)
-	cutter := ffmpeg.NewCutter(execRunner, os.Stdout, os.Stderr)
+	cutter := ffmpeg.NewCutter(execRunner, childOut(cfg), childOut(cfg))
 	store := fs.New()
 
 	service := delegatesvc.NewDelegateService(

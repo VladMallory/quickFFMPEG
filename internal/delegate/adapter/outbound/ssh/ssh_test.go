@@ -19,11 +19,11 @@ func TestFFmpegMajor(t *testing.T) {
 }
 
 func TestParseLoad(t *testing.T) {
-	got, err := parseLoad("0.22 0.10 0.04 1/234 5678\n12\n")
+	got, err := parseLoad("cpu  100 0 50 800 20 0 0 0 0 0\ncpu  200 0 100 850 30 0 0 0 0 0\n4\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.One != "0.22" || got.Cores != 12 {
+	if got.Pct != 71 || got.Cores != 4 {
 		t.Fatalf("got %+v", got)
 	}
 	if _, err := parseLoad(""); err == nil {

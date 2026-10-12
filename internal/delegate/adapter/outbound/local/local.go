@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	delegatedomain "github.com/VladMallory/quickFFMPEG/internal/delegate/domain"
 	"github.com/VladMallory/quickFFMPEG/internal/platform/crypt"
@@ -156,30 +157,116 @@ func (a *Adapter) Sha256(ctx context.Context, remote string) (string, error) {
 
 func (a *Adapter) Load(ctx context.Context) (delegatedomain.WorkerLoad, error) {
 	if runtime.GOOS == "darwin" {
-		out, err := osexec.CommandContext(ctx, "sysctl", "-n", "vm.loadavg").Output()
-		if err != nil {
-			return delegatedomain.WorkerLoad{}, err
-		}
-		return parseSysctl(strings.TrimSpace(string(out)))
+		return a.loadDarwin(ctx)
 	}
-	data, err := os.ReadFile("/proc/loadavg")
+	return a.loadLinux()
+}
+
+func (a *Adapter) loadDarwin(ctx context.Context) (delegatedomain.WorkerLoad, error) {
+	read := func() ([]uint64, error) {
+		out, err := osexec.CommandContext(ctx, "sysctl", "-n", "kern.cp_time").Output()
+		if err != nil {
+			return nil, err
+		}
+		var nums []uint64
+		for _, f := range strings.Fields(string(out)) {
+			n, err := strconv.ParseUint(f, 10, 64)
+			if err != nil {
+				return nil, err
+			}
+			nums = append(nums, n)
+		}
+		if len(nums) < 5 {
+			return nil, fmt.Errorf("короткий вывод kern.cp_time")
+		}
+		return nums, nil
+	}
+	before, err := read()
 	if err != nil {
 		return delegatedomain.WorkerLoad{}, err
 	}
-	fields := strings.Fields(string(data))
-	if len(fields) == 0 {
-		return delegatedomain.WorkerLoad{}, fmt.Errorf("пустой вывод нагрузки")
+	time.Sleep(time.Second)
+	after, err := read()
+	if err != nil {
+		return delegatedomain.WorkerLoad{}, err
 	}
-	return delegatedomain.WorkerLoad{One: fields[0], Cores: runtime.NumCPU()}, nil
+	var totalA, totalB uint64
+	for _, n := range before {
+		totalA += n
+	}
+	for _, n := range after {
+		totalB += n
+	}
+	return delegatedomain.WorkerLoad{
+		Pct:   cpuPct(before[4], totalA, after[4], totalB),
+		Cores: runtime.NumCPU(),
+	}, nil
 }
 
-func parseSysctl(out string) (delegatedomain.WorkerLoad, error) {
-	out = strings.Trim(out, "{ }")
-	fields := strings.Fields(out)
-	if len(fields) == 0 {
-		return delegatedomain.WorkerLoad{}, fmt.Errorf("пустой вывод нагрузки")
+func (a *Adapter) loadLinux() (delegatedomain.WorkerLoad, error) {
+	read := func() (uint64, uint64, error) {
+		data, err := os.ReadFile("/proc/stat")
+		if err != nil {
+			return 0, 0, err
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.HasPrefix(line, "cpu ") {
+				return cpuTotals(line)
+			}
+		}
+		return 0, 0, fmt.Errorf("нет строки cpu")
 	}
-	return delegatedomain.WorkerLoad{One: fields[0], Cores: runtime.NumCPU()}, nil
+	idleA, totalA, err := read()
+	if err != nil {
+		return delegatedomain.WorkerLoad{}, err
+	}
+	time.Sleep(time.Second)
+	idleB, totalB, err := read()
+	if err != nil {
+		return delegatedomain.WorkerLoad{}, err
+	}
+	return delegatedomain.WorkerLoad{
+		Pct:   cpuPct(idleA, totalA, idleB, totalB),
+		Cores: runtime.NumCPU(),
+	}, nil
+}
+
+func cpuTotals(line string) (uint64, uint64, error) {
+	fields := strings.Fields(line)
+	if len(fields) < 5 || fields[0] != "cpu" {
+		return 0, 0, fmt.Errorf("битая строка cpu")
+	}
+	var nums []uint64
+	for _, f := range fields[1:] {
+		n, err := strconv.ParseUint(f, 10, 64)
+		if err != nil {
+			return 0, 0, err
+		}
+		nums = append(nums, n)
+	}
+	var total uint64
+	for _, n := range nums {
+		total += n
+	}
+	idle := nums[3]
+	if len(nums) > 4 {
+		idle += nums[4]
+	}
+	return idle, total, nil
+}
+
+func cpuPct(idleA, totalA, idleB, totalB uint64) int {
+	if totalB <= totalA {
+		return 0
+	}
+	pct := 100 * (1 - float64(idleB-idleA)/float64(totalB-totalA))
+	if pct < 0 {
+		return 0
+	}
+	if pct > 100 {
+		return 100
+	}
+	return int(pct)
 }
 
 func (a *Adapter) KillJobs(ctx context.Context) error {

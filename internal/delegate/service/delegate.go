@@ -86,6 +86,26 @@ func NewDelegateService(
 	}
 }
 
+type fileJob struct {
+	name string
+	path string
+}
+
+type farmJob struct {
+	name       string
+	segs       []string
+	audio      string
+	resBefore  string
+	sizeBefore float64
+}
+
+type farmUnit struct {
+	fi      int
+	si      int
+	segPath string
+	size    int64
+}
+
 func (s DelegateService) DelegateAll(
 	ctx context.Context,
 	cfg converterdomain.Config,
@@ -172,10 +192,6 @@ func (s DelegateService) DelegateAll(
 
 	var stats []converterdomain.FileStat
 
-	type fileJob struct {
-		name string
-		path string
-	}
 	var jobs []fileJob
 	for _, name := range names {
 		inputPath := filepath.Join(cfg.Path, name)
@@ -189,6 +205,10 @@ func (s DelegateService) DelegateAll(
 			continue
 		}
 		jobs = append(jobs, fileJob{name: name, path: inputPath})
+	}
+
+	if cfg.Farm {
+		return s.farmAll(ctx, cfg, workers, shells, dirs, tmpDir, compressedDir, jobs, onEncoded)
 	}
 
 	sizes := make([]int64, len(jobs))
@@ -230,21 +250,12 @@ func (s DelegateService) DelegateAll(
 				default:
 				}
 				job := jobs[qi]
-				var stat converterdomain.FileStat
-				var err error
-				if cfg.Farm {
-					stat, err = s.farmFile(
-						ctx2, cfg, workers, shells, dirs,
-						tmpDir, compressedDir, qi, job.name, job.path,
-					)
-				} else {
-					base := strings.TrimSuffix(job.name, filepath.Ext(job.name))
-					finalPath := filepath.Join(compressedDir, base+".mp4")
-					stat, err = s.delegateFile(
-						ctx2, cfg, shells[k], dirs[k], tmpDir,
-						fmt.Sprintf("job%03d", qi), job.name, job.path, finalPath,
-					)
-				}
+				base := strings.TrimSuffix(job.name, filepath.Ext(job.name))
+				finalPath := filepath.Join(compressedDir, base+".mp4")
+				stat, err := s.delegateFile(
+					ctx2, cfg, shells[k], dirs[k], tmpDir,
+					fmt.Sprintf("job%03d", qi), job.name, job.path, finalPath,
+				)
 				if err != nil {
 					errCh <- fmt.Errorf("%s: %v", job.name, err)
 					cancel()
@@ -269,6 +280,211 @@ func (s DelegateService) DelegateAll(
 	}
 
 	return stats, nil
+}
+
+func (s DelegateService) farmAll(
+	ctx context.Context,
+	cfg converterdomain.Config,
+	workers []delegatedomain.WorkerProfile,
+	shells []RemoteShell,
+	dirs []string,
+	tmpDir, compressedDir string,
+	jobs []fileJob,
+	onEncoded func(outputPath string),
+) ([]converterdomain.FileStat, error) {
+	farmJobs := make([]farmJob, 0, len(jobs))
+	for qi, job := range jobs {
+		fj, err := s.splitFarmFile(ctx, cfg, tmpDir, qi, job.name, job.path)
+		if err != nil {
+			return nil, err
+		}
+		fmt.Fprintf(s.stdout, "Ферма: %s → %d кусков\n", job.name, len(fj.segs))
+		farmJobs = append(farmJobs, fj)
+	}
+
+	var units []farmUnit
+	for fi, fj := range farmJobs {
+		for si, segPath := range fj.segs {
+			fiStat, err := os.Stat(segPath)
+			if err != nil {
+				return nil, err
+			}
+			units = append(units, farmUnit{fi: fi, si: si, segPath: segPath, size: fiStat.Size()})
+		}
+	}
+	sizes := make([]int64, len(units))
+	for u, unit := range units {
+		sizes[u] = unit.size
+	}
+	powers := make([]int, len(workers))
+	for k, w := range workers {
+		powers[k] = w.Power
+	}
+	assign := delegatedomain.AssignSegments(sizes, powers)
+	queues := make([][]int, len(workers))
+	for u, k := range assign {
+		queues[k] = append(queues[k], u)
+	}
+	for k, w := range workers {
+		if len(queues[k]) == 0 {
+			continue
+		}
+		var b strings.Builder
+		for _, u := range queues[k] {
+			fmt.Fprintf(&b, "f%d:[%d] ", units[u].fi, units[u].si)
+		}
+		fmt.Fprintf(s.stdout, "Ферма: %s берет %s\n", w.Name, strings.TrimSpace(b.String()))
+	}
+
+	segResults := make([][]string, len(farmJobs))
+	for fi := range segResults {
+		segResults[fi] = make([]string, len(farmJobs[fi].segs))
+	}
+	ctx2, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(units))
+
+	for k := range workers {
+		queue := queues[k]
+		if len(queue) == 0 {
+			continue
+		}
+		slots := workers[k].Slots
+		if slots <= 0 {
+			slots = 1
+		}
+		wg.Add(1)
+		go func(k int, queue []int) {
+			defer wg.Done()
+			sem := make(chan struct{}, slots)
+			var inner sync.WaitGroup
+			for _, u := range queue {
+				select {
+				case <-ctx2.Done():
+					return
+				default:
+				}
+				sem <- struct{}{}
+				inner.Add(1)
+				go func(u int) {
+					defer inner.Done()
+					defer func() { <-sem }()
+					unit := units[u]
+					segStart := time.Now()
+					tag := fmt.Sprintf("job%03ds%02d", unit.fi, unit.si)
+					final := filepath.Join(tmpDir, fmt.Sprintf("dec-%03d-%02d.mp4", unit.fi, unit.si))
+					_, err := s.delegateFile(
+						ctx2, cfg, shells[k], dirs[k], tmpDir,
+						tag, filepath.Base(unit.segPath), unit.segPath, final,
+					)
+					if err != nil {
+						errCh <- fmt.Errorf(
+							"сегмент %d файла %s: %v",
+							unit.si, farmJobs[unit.fi].name, err,
+						)
+						cancel()
+						return
+					}
+					segResults[unit.fi][unit.si] = final
+					fmt.Fprintf(
+						s.stdout, "Ферма: кусок %d готов за %s (%s)\n",
+						unit.si, time.Since(segStart).Round(time.Second), workers[k].Name,
+					)
+				}(u)
+			}
+			inner.Wait()
+		}(k, queue)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	stats := make([]converterdomain.FileStat, 0, len(farmJobs))
+	for fi, fj := range farmJobs {
+		stat, err := s.concatFarmFile(ctx, cfg, compressedDir, fj, segResults[fi])
+		if err != nil {
+			return nil, err
+		}
+		if onEncoded != nil {
+			onEncoded(stat.OutputPath)
+		}
+		stats = append(stats, stat)
+	}
+	return stats, nil
+}
+
+func (s DelegateService) splitFarmFile(
+	ctx context.Context,
+	cfg converterdomain.Config,
+	tmpDir string,
+	fi int,
+	name, inputPath string,
+) (farmJob, error) {
+	fj := farmJob{name: name}
+	fj.resBefore = s.prober.Resolution(ctx, inputPath)
+	sizeBefore, err := s.store.SizeMB(inputPath)
+	if err != nil {
+		return fj, fmt.Errorf("не удалось получить статистику файла %v", err)
+	}
+	fj.sizeBefore = sizeBefore
+
+	segDir := filepath.Join(tmpDir, fmt.Sprintf("farm%03d", fi))
+	if err := os.MkdirAll(segDir, 0o755); err != nil {
+		return fj, err
+	}
+
+	segSecs := cfg.FarmSeg
+	if segSecs <= 0 {
+		segSecs = 60
+	}
+	segs, err := s.cutter.SplitVideo(ctx, inputPath, segDir, "seg", segSecs)
+	if err != nil {
+		return fj, fmt.Errorf("не удалось нарезать видео: %v", err)
+	}
+	fj.segs = segs
+
+	hasAudio, err := s.cutter.HasAudio(ctx, inputPath)
+	if err == nil && hasAudio {
+		fj.audio = filepath.Join(segDir, "audio.mkv")
+		if err := s.cutter.ExtractAudio(
+			ctx, inputPath, fj.audio, cfg.AudioCodecValue, cfg.AudioBitrate,
+		); err != nil {
+			return fj, fmt.Errorf("не удалось вытащить аудио: %v", err)
+		}
+	}
+	return fj, nil
+}
+
+func (s DelegateService) concatFarmFile(
+	ctx context.Context,
+	cfg converterdomain.Config,
+	compressedDir string,
+	fj farmJob,
+	parts []string,
+) (converterdomain.FileStat, error) {
+	base := strings.TrimSuffix(fj.name, filepath.Ext(fj.name))
+	finalLocal := filepath.Join(compressedDir, base+".mp4")
+	if err := s.cutter.Concat(ctx, parts, fj.audio, finalLocal); err != nil {
+		return converterdomain.FileStat{}, fmt.Errorf("не удалось склеить: %v", err)
+	}
+	resAfter := s.prober.Resolution(ctx, finalLocal)
+	sizeAfter, err := s.store.SizeMB(finalLocal)
+	if err != nil {
+		return converterdomain.FileStat{}, fmt.Errorf("не удалось получить размер сжатого файла %v", err)
+	}
+	return converterdomain.FileStat{
+		Name:             fj.name,
+		OutputPath:       finalLocal,
+		SizeBefore:       fj.sizeBefore,
+		SizeAfter:        sizeAfter,
+		ResolutionBefore: fj.resBefore,
+		ResolutionAfter:  resAfter,
+	}, nil
 }
 
 func (s DelegateService) prepare(
@@ -404,155 +620,6 @@ func (s DelegateService) delegateFile(
 	}, nil
 }
 
-func (s DelegateService) farmFile(
-	ctx context.Context,
-	cfg converterdomain.Config,
-	workers []delegatedomain.WorkerProfile,
-	shells []RemoteShell,
-	dirs []string,
-	tmpDir, compressedDir string,
-	i int,
-	name, inputPath string,
-) (converterdomain.FileStat, error) {
-	resBefore := s.prober.Resolution(ctx, inputPath)
-
-	sizeBefore, err := s.store.SizeMB(inputPath)
-	if err != nil {
-		return converterdomain.FileStat{}, fmt.Errorf("не удалось получить статистику файла %v", err)
-	}
-
-	segDir := filepath.Join(tmpDir, fmt.Sprintf("farm%03d", i))
-	if err := os.MkdirAll(segDir, 0o755); err != nil {
-		return converterdomain.FileStat{}, err
-	}
-
-	segSecs := cfg.FarmSeg
-	if segSecs <= 0 {
-		segSecs = 60
-	}
-	segs, err := s.cutter.SplitVideo(ctx, inputPath, segDir, "seg", segSecs)
-	if err != nil {
-		return converterdomain.FileStat{}, fmt.Errorf("не удалось нарезать видео: %v", err)
-	}
-
-	sizes := make([]int64, len(segs))
-	for j, segPath := range segs {
-		fi, err := os.Stat(segPath)
-		if err != nil {
-			return converterdomain.FileStat{}, err
-		}
-		sizes[j] = fi.Size()
-	}
-	powers := make([]int, len(workers))
-	for k, w := range workers {
-		powers[k] = w.Power
-	}
-	assign := delegatedomain.AssignSegments(sizes, powers)
-	queues := make([][]int, len(workers))
-	for j, k := range assign {
-		queues[k] = append(queues[k], j)
-	}
-	for k, w := range workers {
-		if len(queues[k]) > 0 {
-			fmt.Fprintf(s.stdout, "Ферма: %s берет куски %v\n", w.Name, queues[k])
-		}
-	}
-
-	audioLocal := ""
-	hasAudio, err := s.cutter.HasAudio(ctx, inputPath)
-	if err == nil && hasAudio {
-		audioLocal = filepath.Join(segDir, "audio.mkv")
-		if err := s.cutter.ExtractAudio(
-			ctx, inputPath, audioLocal, cfg.AudioCodecValue, cfg.AudioBitrate,
-		); err != nil {
-			return converterdomain.FileStat{}, fmt.Errorf("не удалось вытащить аудио: %v", err)
-		}
-	}
-
-	results := make([]string, len(segs))
-	ctx2, cancel := context.WithCancel(ctx)
-	defer cancel()
-	var wg sync.WaitGroup
-	errCh := make(chan error, len(segs))
-
-	for k := range workers {
-		queue := queues[k]
-		if len(queue) == 0 {
-			continue
-		}
-		slots := workers[k].Slots
-		if slots <= 0 {
-			slots = 1
-		}
-		wg.Add(1)
-		go func(k int, queue []int) {
-			defer wg.Done()
-			sem := make(chan struct{}, slots)
-			var inner sync.WaitGroup
-			for _, j := range queue {
-				select {
-				case <-ctx2.Done():
-					return
-				default:
-				}
-				sem <- struct{}{}
-				inner.Add(1)
-				go func(j int) {
-					defer inner.Done()
-					defer func() { <-sem }()
-					segStart := time.Now()
-					tag := fmt.Sprintf("job%03ds%02d", i, j)
-					final := filepath.Join(segDir, fmt.Sprintf("dec%02d.mp4", j))
-					_, err := s.delegateFile(
-						ctx2, cfg, shells[k], dirs[k], tmpDir,
-						tag, filepath.Base(segs[j]), segs[j], final,
-					)
-					if err != nil {
-						errCh <- fmt.Errorf("сегмент %d: %v", j, err)
-						cancel()
-						return
-					}
-					results[j] = final
-					fmt.Fprintf(
-						s.stdout, "Ферма: кусок %d готов за %s (%s)\n",
-						j, time.Since(segStart).Round(time.Second), workers[k].Name,
-					)
-				}(j)
-			}
-			inner.Wait()
-		}(k, queue)
-	}
-	wg.Wait()
-	close(errCh)
-	for err := range errCh {
-		if err != nil {
-			return converterdomain.FileStat{}, err
-		}
-	}
-
-	base := strings.TrimSuffix(name, filepath.Ext(name))
-	finalLocal := filepath.Join(compressedDir, base+".mp4")
-	if err := s.cutter.Concat(ctx, results, audioLocal, finalLocal); err != nil {
-		return converterdomain.FileStat{}, fmt.Errorf("не удалось склеить: %v", err)
-	}
-
-	resAfter := s.prober.Resolution(ctx, finalLocal)
-
-	sizeAfter, err := s.store.SizeMB(finalLocal)
-	if err != nil {
-		return converterdomain.FileStat{}, fmt.Errorf("не удалось получить размер сжатого файла %v", err)
-	}
-
-	return converterdomain.FileStat{
-		Name:             name,
-		OutputPath:       finalLocal,
-		SizeBefore:       sizeBefore,
-		SizeAfter:        sizeAfter,
-		ResolutionBefore: resBefore,
-		ResolutionAfter:  resAfter,
-	}, nil
-}
-
 func (s DelegateService) freshKeys() ([4]string, error) {
 	var keys [4]string
 	for i := range keys {
@@ -616,7 +683,7 @@ func (s DelegateService) reportLoad(
 			lines[r.idx] = workers[r.idx].Name + ": ?"
 		} else {
 			lines[r.idx] = fmt.Sprintf(
-				"%s: %s/%d", workers[r.idx].Name, r.load.One, r.load.Cores,
+				"%s: %d%%/%d", workers[r.idx].Name, r.load.Pct, r.load.Cores,
 			)
 		}
 	}

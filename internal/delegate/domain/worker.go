@@ -18,7 +18,7 @@ type WorkerProfile struct {
 }
 
 type WorkerLoad struct {
-	One   string
+	Pct   int
 	Cores int
 }
 
