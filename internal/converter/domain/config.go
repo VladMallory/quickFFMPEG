@@ -16,6 +16,8 @@ type Config struct {
 	Security        string `json:"security"`
 	CryptIn         string `json:"crypt_in"`
 	CryptOut        string `json:"crypt_out"`
+	Farm            bool   `json:"farm"`
+	FarmSeg         int    `json:"farm_seg"`
 }
 
 func (c *Config) ApplyDefaults() error {

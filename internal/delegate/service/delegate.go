@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	converterdomain "github.com/VladMallory/quickFFMPEG/internal/converter/domain"
 	delegatedomain "github.com/VladMallory/quickFFMPEG/internal/delegate/domain"
@@ -45,28 +46,38 @@ type Prober interface {
 	Resolution(ctx context.Context, path string) string
 }
 
+type Cutter interface {
+	SplitVideo(ctx context.Context, src, dir, prefix string, segSecs int) ([]string, error)
+	HasAudio(ctx context.Context, src string) (bool, error)
+	ExtractAudio(ctx context.Context, src, dst, codec, bitrate string) error
+	Concat(ctx context.Context, parts []string, audio, out string) error
+}
+
 type DelegateService struct {
 	cipher   Cipher
-	shell    RemoteShell
+	shells   []RemoteShell
 	store    SourceStore
 	prober   Prober
+	cutter   Cutter
 	stdout   io.Writer
 	binLocal string
 }
 
 func NewDelegateService(
 	cipher Cipher,
-	shell RemoteShell,
+	shells []RemoteShell,
 	store SourceStore,
 	prober Prober,
+	cutter Cutter,
 	stdout io.Writer,
 	binLocal string,
 ) DelegateService {
 	return DelegateService{
 		cipher:   cipher,
-		shell:    shell,
+		shells:   shells,
 		store:    store,
 		prober:   prober,
+		cutter:   cutter,
 		stdout:   stdout,
 		binLocal: binLocal,
 	}
@@ -75,12 +86,26 @@ func NewDelegateService(
 func (s DelegateService) DelegateAll(
 	ctx context.Context,
 	cfg converterdomain.Config,
-	worker delegatedomain.WorkerProfile,
+	workers []delegatedomain.WorkerProfile,
 	onEncoded func(outputPath string),
 ) ([]converterdomain.FileStat, error) {
-	dir, err := s.prepare(ctx, worker)
-	if err != nil {
-		return nil, err
+	if len(workers) == 0 {
+		return nil, fmt.Errorf("нет воркеров")
+	}
+	if len(workers) != len(s.shells) {
+		return nil, fmt.Errorf("воркеров и подключений поровну быть должно")
+	}
+	if cfg.Farm && len(workers) < 2 {
+		return nil, fmt.Errorf("для --farm нужно минимум два профиля в --security")
+	}
+
+	dirs := make([]string, len(workers))
+	for k, w := range workers {
+		dir, err := s.prepare(ctx, s.shells[k], w)
+		if err != nil {
+			return nil, err
+		}
+		dirs[k] = dir
 	}
 
 	compressedDir := filepath.Join(cfg.Path, "compressed")
@@ -117,9 +142,23 @@ func (s DelegateService) DelegateAll(
 			continue
 		}
 
-		stat, err := s.delegateFile(ctx, cfg, dir, tmpDir, compressedDir, i, name, inputPath, onEncoded)
+		var stat converterdomain.FileStat
+		if cfg.Farm {
+			stat, err = s.farmFile(ctx, cfg, dirs, tmpDir, compressedDir, i, name, inputPath)
+		} else {
+			k := i % len(workers)
+			base := strings.TrimSuffix(name, filepath.Ext(name))
+			finalPath := filepath.Join(compressedDir, base+".mp4")
+			stat, err = s.delegateFile(
+				ctx, cfg, s.shells[k], dirs[k], tmpDir,
+				fmt.Sprintf("job%03d", i), name, inputPath, finalPath,
+			)
+		}
 		if err != nil {
 			return nil, err
+		}
+		if onEncoded != nil {
+			onEncoded(stat.OutputPath)
 		}
 		stats = append(stats, stat)
 	}
@@ -127,8 +166,12 @@ func (s DelegateService) DelegateAll(
 	return stats, nil
 }
 
-func (s DelegateService) prepare(ctx context.Context, worker delegatedomain.WorkerProfile) (string, error) {
-	machine, err := s.shell.UnameM(ctx)
+func (s DelegateService) prepare(
+	ctx context.Context,
+	shell RemoteShell,
+	worker delegatedomain.WorkerProfile,
+) (string, error) {
+	machine, err := shell.UnameM(ctx)
 	if err != nil {
 		return "", fmt.Errorf("воркер недоступен: %v", err)
 	}
@@ -136,11 +179,11 @@ func (s DelegateService) prepare(ctx context.Context, worker delegatedomain.Work
 		return "", fmt.Errorf("воркер должен быть linux x86_64, а там %s", machine)
 	}
 
-	if err := s.shell.CheckFFmpeg(ctx); err != nil {
+	if err := shell.CheckFFmpeg(ctx); err != nil {
 		return "", fmt.Errorf("на воркере нет ffmpeg: %v", err)
 	}
 
-	home, err := s.shell.Home(ctx)
+	home, err := shell.Home(ctx)
 	if err != nil {
 		return "", fmt.Errorf("не удалось узнать домашнюю папку воркера: %v", err)
 	}
@@ -149,7 +192,7 @@ func (s DelegateService) prepare(ctx context.Context, worker delegatedomain.Work
 		dir = home + dir[1:]
 	}
 
-	if err := s.shell.EnsureDir(ctx,
+	if err := shell.EnsureDir(ctx,
 		path.Join(dir, "in"),
 		path.Join(dir, "out"),
 		path.Join(dir, "bin"),
@@ -158,7 +201,7 @@ func (s DelegateService) prepare(ctx context.Context, worker delegatedomain.Work
 	}
 
 	binRemote := path.Join(dir, "bin", "quickffmpeg")
-	has, err := s.shell.HasFile(ctx, binRemote)
+	has, err := shell.HasFile(ctx, binRemote)
 	if err != nil {
 		return "", err
 	}
@@ -167,7 +210,7 @@ func (s DelegateService) prepare(ctx context.Context, worker delegatedomain.Work
 			return "", fmt.Errorf("на воркере нет бинарника, собери: make build-worker")
 		}
 		fmt.Fprintln(s.stdout, "Заливаю бинарник на воркер:", binRemote)
-		if err := s.shell.Put(ctx, s.binLocal, binRemote); err != nil {
+		if err := shell.Put(ctx, s.binLocal, binRemote); err != nil {
 			return "", fmt.Errorf("не удалось залить бинарник: %v", err)
 		}
 	}
@@ -178,10 +221,8 @@ func (s DelegateService) prepare(ctx context.Context, worker delegatedomain.Work
 func (s DelegateService) delegateFile(
 	ctx context.Context,
 	cfg converterdomain.Config,
-	dir, tmpDir, compressedDir string,
-	i int,
-	name, inputPath string,
-	onEncoded func(outputPath string),
+	shell RemoteShell,
+	dir, tmpDir, tag, name, inputPath, finalPath string,
 ) (converterdomain.FileStat, error) {
 	resBefore := s.prober.Resolution(ctx, inputPath)
 
@@ -197,8 +238,7 @@ func (s DelegateService) delegateFile(
 	dec := converterdomain.Crypt{Key: keys[0], IV: keys[1]}
 	enc := converterdomain.Crypt{Key: keys[2], IV: keys[3]}
 
-	job := fmt.Sprintf("job%03d.enc", i)
-	encLocal := filepath.Join(tmpDir, job)
+	encLocal := filepath.Join(tmpDir, tag+".enc")
 	if err := s.cipher.EncryptFile(inputPath, encLocal, dec.Key, dec.IV); err != nil {
 		return converterdomain.FileStat{}, fmt.Errorf("не удалось зашифровать файл: %v", err)
 	}
@@ -207,12 +247,12 @@ func (s DelegateService) delegateFile(
 		return converterdomain.FileStat{}, err
 	}
 
-	rIn := "in/" + job
-	rOut := "out/" + job
-	if err := s.shell.Put(ctx, encLocal, path.Join(dir, rIn)); err != nil {
+	rIn := "in/" + tag + ".enc"
+	rOut := "out/" + tag + ".enc"
+	if err := shell.Put(ctx, encLocal, path.Join(dir, rIn)); err != nil {
 		return converterdomain.FileStat{}, fmt.Errorf("не удалось отправить файл на воркер: %v", err)
 	}
-	gotHash, err := s.shell.Sha256(ctx, path.Join(dir, rIn))
+	gotHash, err := shell.Sha256(ctx, path.Join(dir, rIn))
 	if err != nil {
 		return converterdomain.FileStat{}, err
 	}
@@ -222,22 +262,124 @@ func (s DelegateService) delegateFile(
 
 	env := delegatedomain.RemoteEnv(dec, enc)
 	args := delegatedomain.RemoteArgs(cfg, path.Join(dir, rIn), path.Join(dir, rOut))
-	if err := s.shell.RunJob(ctx, dir, env, "bin/quickffmpeg", args); err != nil {
+	if err := shell.RunJob(ctx, dir, env, "bin/quickffmpeg", args); err != nil {
 		return converterdomain.FileStat{}, fmt.Errorf("ошибка кодирования на воркере: %v", err)
 	}
 
-	pulled := filepath.Join(tmpDir, "out-"+job)
-	if err := s.shell.Get(ctx, path.Join(dir, rOut), pulled); err != nil {
+	pulled := filepath.Join(tmpDir, "out-"+tag+".enc")
+	if err := shell.Get(ctx, path.Join(dir, rOut), pulled); err != nil {
 		return converterdomain.FileStat{}, fmt.Errorf("не удалось забрать результат: %v", err)
 	}
-	if err := s.shell.Remove(ctx, path.Join(dir, rIn), path.Join(dir, rOut)); err != nil {
+	if err := shell.Remove(ctx, path.Join(dir, rIn), path.Join(dir, rOut)); err != nil {
 		fmt.Fprintln(s.stdout, "Предупреждение: не удалось зачистить файлы на воркере:", err)
+	}
+
+	if err := s.cipher.DecryptFile(pulled, finalPath, enc.Key, enc.IV); err != nil {
+		return converterdomain.FileStat{}, fmt.Errorf("не удалось расшифровать результат: %v", err)
+	}
+
+	resAfter := s.prober.Resolution(ctx, finalPath)
+
+	sizeAfter, err := s.store.SizeMB(finalPath)
+	if err != nil {
+		return converterdomain.FileStat{}, fmt.Errorf("не удалось получить размер сжатого файла %v", err)
+	}
+
+	return converterdomain.FileStat{
+		Name:             name,
+		OutputPath:       finalPath,
+		SizeBefore:       sizeBefore,
+		SizeAfter:        sizeAfter,
+		ResolutionBefore: resBefore,
+		ResolutionAfter:  resAfter,
+	}, nil
+}
+
+func (s DelegateService) farmFile(
+	ctx context.Context,
+	cfg converterdomain.Config,
+	dirs []string,
+	tmpDir, compressedDir string,
+	i int,
+	name, inputPath string,
+) (converterdomain.FileStat, error) {
+	resBefore := s.prober.Resolution(ctx, inputPath)
+
+	sizeBefore, err := s.store.SizeMB(inputPath)
+	if err != nil {
+		return converterdomain.FileStat{}, fmt.Errorf("не удалось получить статистику файла %v", err)
+	}
+
+	segDir := filepath.Join(tmpDir, fmt.Sprintf("farm%03d", i))
+	if err := os.MkdirAll(segDir, 0o755); err != nil {
+		return converterdomain.FileStat{}, err
+	}
+
+	segSecs := cfg.FarmSeg
+	if segSecs <= 0 {
+		segSecs = 60
+	}
+	segs, err := s.cutter.SplitVideo(ctx, inputPath, segDir, "seg", segSecs)
+	if err != nil {
+		return converterdomain.FileStat{}, fmt.Errorf("не удалось нарезать видео: %v", err)
+	}
+	fmt.Fprintf(s.stdout, "Ферма: %s нарезан на %d кусков\n", name, len(segs))
+
+	audioLocal := ""
+	hasAudio, err := s.cutter.HasAudio(ctx, inputPath)
+	if err == nil && hasAudio {
+		audioLocal = filepath.Join(segDir, "audio.mkv")
+		if err := s.cutter.ExtractAudio(
+			ctx, inputPath, audioLocal, cfg.AudioCodecValue, cfg.AudioBitrate,
+		); err != nil {
+			return converterdomain.FileStat{}, fmt.Errorf("не удалось вытащить аудио: %v", err)
+		}
+	}
+
+	results := make([]string, len(segs))
+	sem := make(chan struct{}, len(s.shells))
+	ctx2, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(segs))
+
+	for j, segPath := range segs {
+		wg.Add(1)
+		go func(j int, segPath string) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx2.Done():
+				return
+			}
+			k := j % len(s.shells)
+			tag := fmt.Sprintf("job%03ds%02d", i, j)
+			final := filepath.Join(segDir, fmt.Sprintf("dec%02d.mp4", j))
+			_, err := s.delegateFile(
+				ctx2, cfg, s.shells[k], dirs[k], tmpDir,
+				tag, filepath.Base(segPath), segPath, final,
+			)
+			if err != nil {
+				errCh <- fmt.Errorf("сегмент %d: %v", j, err)
+				cancel()
+				return
+			}
+			results[j] = final
+		}(j, segPath)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			return converterdomain.FileStat{}, err
+		}
 	}
 
 	base := strings.TrimSuffix(name, filepath.Ext(name))
 	finalLocal := filepath.Join(compressedDir, base+".mp4")
-	if err := s.cipher.DecryptFile(pulled, finalLocal, enc.Key, enc.IV); err != nil {
-		return converterdomain.FileStat{}, fmt.Errorf("не удалось расшифровать результат: %v", err)
+	if err := s.cutter.Concat(ctx, results, audioLocal, finalLocal); err != nil {
+		return converterdomain.FileStat{}, fmt.Errorf("не удалось склеить: %v", err)
 	}
 
 	resAfter := s.prober.Resolution(ctx, finalLocal)
@@ -245,10 +387,6 @@ func (s DelegateService) delegateFile(
 	sizeAfter, err := s.store.SizeMB(finalLocal)
 	if err != nil {
 		return converterdomain.FileStat{}, fmt.Errorf("не удалось получить размер сжатого файла %v", err)
-	}
-
-	if onEncoded != nil {
-		onEncoded(finalLocal)
 	}
 
 	return converterdomain.FileStat{

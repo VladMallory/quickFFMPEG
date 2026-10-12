@@ -76,6 +76,16 @@ func Load() domain.Config {
 		"", "режим воркера: выходной шифрованный файл",
 	)
 
+	flag.BoolVar(
+		&cfg.Farm, "farm",
+		false, "ферма: пилить видео на куски и кодировать на всех воркерах параллельно",
+	)
+
+	flag.IntVar(
+		&cfg.FarmSeg, "farm-seg",
+		60, "целевая длина куска в секундах для --farm",
+	)
+
 	flag.Parse()
 
 	if err := cfg.ApplyDefaults(); err != nil {

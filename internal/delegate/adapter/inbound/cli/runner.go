@@ -17,7 +17,7 @@ import (
 type Runner struct {
 	service delegatesvc.DelegateService
 	cfg     converterdomain.Config
-	worker  delegatedomain.WorkerProfile
+	workers []delegatedomain.WorkerProfile
 	buildTS string
 	stdout  io.Writer
 }
@@ -25,14 +25,14 @@ type Runner struct {
 func New(
 	service delegatesvc.DelegateService,
 	cfg converterdomain.Config,
-	worker delegatedomain.WorkerProfile,
+	workers []delegatedomain.WorkerProfile,
 	buildTS string,
 	stdout io.Writer,
 ) *Runner {
 	return &Runner{
 		service: service,
 		cfg:     cfg,
-		worker:  worker,
+		workers: workers,
 		buildTS: buildTS,
 		stdout:  stdout,
 	}
@@ -40,13 +40,18 @@ func New(
 
 func (r *Runner) Run(ctx context.Context) {
 	r.printBuildTime()
-	fmt.Fprintf(
-		r.stdout,
-		"Воркер: %s@%s:%d (%s)\n",
-		r.worker.User, r.worker.Host, r.worker.Port, r.worker.Dir,
-	)
+	for _, w := range r.workers {
+		fmt.Fprintf(
+			r.stdout,
+			"Воркер: %s@%s:%d (%s)\n",
+			w.User, w.Host, w.Port, w.Dir,
+		)
+	}
+	if r.cfg.Farm {
+		fmt.Fprintf(r.stdout, "Ферма: куски по %d сек\n", r.cfg.FarmSeg)
+	}
 
-	stats, err := r.service.DelegateAll(ctx, r.cfg, r.worker, func(outputPath string) {
+	stats, err := r.service.DelegateAll(ctx, r.cfg, r.workers, func(outputPath string) {
 		fmt.Fprintf(r.stdout, "✅ Файл успешно сохранен в: %s\n", outputPath)
 	})
 	if err != nil {

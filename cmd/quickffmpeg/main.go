@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/VladMallory/quickFFMPEG/internal/config"
 	convertercli "github.com/VladMallory/quickFFMPEG/internal/converter/adapter/inbound/cli"
@@ -14,6 +15,7 @@ import (
 	convertersvc "github.com/VladMallory/quickFFMPEG/internal/converter/service"
 	delegatecli "github.com/VladMallory/quickFFMPEG/internal/delegate/adapter/inbound/cli"
 	sshadapter "github.com/VladMallory/quickFFMPEG/internal/delegate/adapter/outbound/ssh"
+	delegatedomain "github.com/VladMallory/quickFFMPEG/internal/delegate/domain"
 	delegatesvc "github.com/VladMallory/quickFFMPEG/internal/delegate/service"
 	"github.com/VladMallory/quickFFMPEG/internal/platform/crypt"
 	execplatform "github.com/VladMallory/quickFFMPEG/internal/platform/exec"
@@ -93,26 +95,44 @@ func setupWorker(cfg converterdomain.Config) func(context.Context) {
 }
 
 func setupDelegate(cfg converterdomain.Config) func(context.Context) {
-	worker, err := config.LoadWorker(cfg.Security)
-	if err != nil {
-		log.Fatal(err)
+	var names []string
+	for _, n := range strings.Split(cfg.Security, ",") {
+		if n = strings.TrimSpace(n); n != "" {
+			names = append(names, n)
+		}
 	}
+	if len(names) == 0 {
+		log.Fatal("пустой --security")
+	}
+
+	workers := make([]delegatedomain.WorkerProfile, 0, len(names))
+	shells := make([]delegatesvc.RemoteShell, 0, len(names))
 
 	execRunner := execplatform.New()
 
-	shell := sshadapter.New(worker, execRunner, os.Stdout, os.Stderr)
+	for _, n := range names {
+		worker, err := config.LoadWorker(n)
+		if err != nil {
+			log.Fatal(err)
+		}
+		workers = append(workers, worker)
+		shells = append(shells, sshadapter.New(worker, execRunner, os.Stdout, os.Stderr))
+	}
+
 	prober := ffmpeg.NewProber(execRunner)
+	cutter := ffmpeg.NewCutter(execRunner, os.Stdout, os.Stderr)
 	store := fs.New()
 
 	service := delegatesvc.NewDelegateService(
 		crypt.New(),
-		shell,
+		shells,
 		store,
 		prober,
+		cutter,
 		os.Stdout,
 		"build/quickffmpeg-linux-amd64",
 	)
-	runner := delegatecli.New(service, cfg, worker, BuildTime, os.Stdout)
+	runner := delegatecli.New(service, cfg, workers, BuildTime, os.Stdout)
 
 	return runner.Run
 }
