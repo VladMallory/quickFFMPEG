@@ -102,6 +102,7 @@ func setupDelegate(cfg converterdomain.Config) func(context.Context) {
 
 	shell := sshadapter.New(worker, execRunner, os.Stdout, os.Stderr)
 	prober := ffmpeg.NewProber(execRunner)
+	muxer := ffmpeg.NewMuxer(execRunner, os.Stdout, os.Stderr)
 	store := fs.New()
 
 	service := delegatesvc.NewDelegateService(
@@ -109,6 +110,7 @@ func setupDelegate(cfg converterdomain.Config) func(context.Context) {
 		shell,
 		store,
 		prober,
+		muxer,
 		os.Stdout,
 		"build/quickffmpeg-linux-amd64",
 	)

@@ -45,11 +45,16 @@ type Prober interface {
 	Resolution(ctx context.Context, path string) string
 }
 
+type Muxer interface {
+	Remux(ctx context.Context, inputPath, outputPath string) error
+}
+
 type DelegateService struct {
 	cipher   Cipher
 	shell    RemoteShell
 	store    SourceStore
 	prober   Prober
+	muxer    Muxer
 	stdout   io.Writer
 	binLocal string
 }
@@ -59,6 +64,7 @@ func NewDelegateService(
 	shell RemoteShell,
 	store SourceStore,
 	prober Prober,
+	muxer Muxer,
 	stdout io.Writer,
 	binLocal string,
 ) DelegateService {
@@ -67,6 +73,7 @@ func NewDelegateService(
 		shell:    shell,
 		store:    store,
 		prober:   prober,
+		muxer:    muxer,
 		stdout:   stdout,
 		binLocal: binLocal,
 	}
@@ -243,8 +250,12 @@ func (s DelegateService) delegateFile(
 
 	base := strings.TrimSuffix(name, filepath.Ext(name))
 	finalLocal := filepath.Join(compressedDir, base+".mp4")
-	if err := s.cipher.DecryptFile(pulled, finalLocal, enc.Key, enc.IV); err != nil {
+	fragLocal := filepath.Join(tmpDir, "frag-"+job)
+	if err := s.cipher.DecryptFile(pulled, fragLocal, enc.Key, enc.IV); err != nil {
 		return converterdomain.FileStat{}, fmt.Errorf("не удалось расшифровать результат: %v", err)
+	}
+	if err := s.muxer.Remux(ctx, fragLocal, finalLocal); err != nil {
+		return converterdomain.FileStat{}, fmt.Errorf("не удалось перепаковатъ: %v", err)
 	}
 
 	resAfter := s.prober.Resolution(ctx, finalLocal)
