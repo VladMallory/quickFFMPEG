@@ -105,7 +105,7 @@ func (s DelegateService) DelegateAll(
 
 	var stats []converterdomain.FileStat
 
-	runID, err := s.cipher.RandHex(4)
+	runID, err := s.cipher.RandHex(8)
 	if err != nil {
 		return nil, err
 	}
