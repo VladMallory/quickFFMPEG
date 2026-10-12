@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	delegatedomain "github.com/VladMallory/quickFFMPEG/internal/delegate/domain"
 	execplatform "github.com/VladMallory/quickFFMPEG/internal/platform/exec"
@@ -79,13 +80,17 @@ func (a *Adapter) HasFile(ctx context.Context, remote string) (bool, error) {
 }
 
 func (a *Adapter) Put(ctx context.Context, local, remote string) error {
-	args := append(a.scpBase(), local, a.dst()+":"+remote)
-	return a.runner.Run(ctx, a.stdout, a.stderr, "scp", args...)
+	return retry(3, func() error {
+		args := append(a.scpBase(), local, a.dst()+":"+remote)
+		return a.runner.Run(ctx, a.stdout, a.stderr, "scp", args...)
+	})
 }
 
 func (a *Adapter) Get(ctx context.Context, remote, local string) error {
-	args := append(a.scpBase(), a.dst()+":"+remote, local)
-	return a.runner.Run(ctx, a.stdout, a.stderr, "scp", args...)
+	return retry(3, func() error {
+		args := append(a.scpBase(), a.dst()+":"+remote, local)
+		return a.runner.Run(ctx, a.stdout, a.stderr, "scp", args...)
+	})
 }
 
 func (a *Adapter) scpBase() []string {
@@ -139,15 +144,39 @@ func (a *Adapter) CheckFFmpeg(ctx context.Context) error {
 }
 
 func (a *Adapter) Sha256(ctx context.Context, remote string) (string, error) {
-	out, err := a.sshOutput(ctx, "sha256sum "+shQuote(remote))
-	if err != nil {
-		return "", err
+	return retryValue(3, func() (string, error) {
+		out, err := a.sshOutput(ctx, "sha256sum "+shQuote(remote))
+		if err != nil {
+			return "", err
+		}
+		fields := strings.Fields(out)
+		if len(fields) == 0 {
+			return "", fmt.Errorf("пустой вывод sha256sum")
+		}
+		return fields[0], nil
+	})
+}
+
+func retry(attempts int, fn func() error) error {
+	_, err := retryValue(attempts, func() (struct{}, error) {
+		return struct{}{}, fn()
+	})
+	return err
+}
+
+func retryValue[T any](attempts int, fn func() (T, error)) (T, error) {
+	var zero T
+	var err error
+	var result T
+	delay := time.Second
+	for i := 0; i < attempts; i++ {
+		if result, err = fn(); err == nil {
+			return result, nil
+		}
+		time.Sleep(delay)
+		delay *= 2
 	}
-	fields := strings.Fields(out)
-	if len(fields) == 0 {
-		return "", fmt.Errorf("пустой вывод sha256sum")
-	}
-	return fields[0], nil
+	return zero, err
 }
 
 func shQuote(s string) string {
