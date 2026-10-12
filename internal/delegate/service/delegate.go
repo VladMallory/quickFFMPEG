@@ -166,7 +166,12 @@ func (s DelegateService) DelegateAll(
 
 	var stats []converterdomain.FileStat
 
-	for i, name := range names {
+	type fileJob struct {
+		name string
+		path string
+	}
+	var jobs []fileJob
+	for _, name := range names {
 		inputPath := filepath.Join(cfg.Path, name)
 
 		if s.store.IsDir(inputPath) {
@@ -177,25 +182,83 @@ func (s DelegateService) DelegateAll(
 		if !converterdomain.ValidExtensions[ext] {
 			continue
 		}
+		jobs = append(jobs, fileJob{name: name, path: inputPath})
+	}
 
-		var stat converterdomain.FileStat
-		if cfg.Farm {
-			stat, err = s.farmFile(ctx, cfg, workers, shells, dirs, tmpDir, compressedDir, i, name, inputPath)
-		} else {
-			k := i % len(workers)
-			base := strings.TrimSuffix(name, filepath.Ext(name))
-			finalPath := filepath.Join(compressedDir, base+".mp4")
-			stat, err = s.delegateFile(
-				ctx, cfg, shells[k], dirs[k], tmpDir,
-				fmt.Sprintf("job%03d", i), name, inputPath, finalPath,
-			)
+	sizes := make([]int64, len(jobs))
+	for i, job := range jobs {
+		fi, err := os.Stat(job.path)
+		if err != nil {
+			return nil, fmt.Errorf("не удалось получить статистику файла %v", err)
 		}
+		sizes[i] = fi.Size()
+	}
+	powers := make([]int, len(workers))
+	for k, w := range workers {
+		powers[k] = w.Power
+	}
+	assign := delegatedomain.AssignSegments(sizes, powers)
+	queues := make([][]int, len(workers))
+	for i, k := range assign {
+		queues[k] = append(queues[k], i)
+	}
+
+	results := make([]converterdomain.FileStat, len(jobs))
+	ctx2, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(jobs))
+
+	for k := range workers {
+		queue := queues[k]
+		if len(queue) == 0 {
+			continue
+		}
+		wg.Add(1)
+		go func(k int, queue []int) {
+			defer wg.Done()
+			for _, qi := range queue {
+				select {
+				case <-ctx2.Done():
+					return
+				default:
+				}
+				job := jobs[qi]
+				var stat converterdomain.FileStat
+				var err error
+				if cfg.Farm {
+					stat, err = s.farmFile(
+						ctx2, cfg, workers, shells, dirs,
+						tmpDir, compressedDir, qi, job.name, job.path,
+					)
+				} else {
+					base := strings.TrimSuffix(job.name, filepath.Ext(job.name))
+					finalPath := filepath.Join(compressedDir, base+".mp4")
+					stat, err = s.delegateFile(
+						ctx2, cfg, shells[k], dirs[k], tmpDir,
+						fmt.Sprintf("job%03d", qi), job.name, job.path, finalPath,
+					)
+				}
+				if err != nil {
+					errCh <- fmt.Errorf("%s: %v", job.name, err)
+					cancel()
+					return
+				}
+				results[qi] = stat
+				if onEncoded != nil {
+					onEncoded(stat.OutputPath)
+				}
+			}
+		}(k, queue)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
 		if err != nil {
 			return nil, err
 		}
-		if onEncoded != nil {
-			onEncoded(stat.OutputPath)
-		}
+	}
+	for _, stat := range results {
 		stats = append(stats, stat)
 	}
 
