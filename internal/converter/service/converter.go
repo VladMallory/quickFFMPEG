@@ -77,40 +77,57 @@ func (s ConverterService) ConvertAll(
 			continue
 		}
 
-		resBefore := s.prober.Resolution(ctx, inputPath)
-
-		sizeBefore, err := s.store.SizeMB(inputPath)
-		if err != nil {
-			return nil, fmt.Errorf("не удалось получить статистику файла %v", err)
-		}
-
 		baseName := strings.TrimSuffix(name, filepath.Ext(name))
 		outputPath := filepath.Join(compressedDir, baseName+".mp4")
 
-		if err := s.encoder.Encode(ctx, cfg, inputPath, outputPath); err != nil {
-			return nil, fmt.Errorf("err: %v", err)
-		}
-
-		if onEncoded != nil {
-			onEncoded(outputPath)
-		}
-
-		resAfter := s.prober.Resolution(ctx, outputPath)
-
-		sizeAfter, err := s.store.SizeMB(outputPath)
+		stat, err := s.ConvertFile(ctx, cfg, name, inputPath, outputPath, onEncoded)
 		if err != nil {
-			return nil, fmt.Errorf("не удалось получить размер сжатого файла %v", err)
+			return nil, err
 		}
-
-		stats = append(stats, domain.FileStat{
-			Name:             name,
-			OutputPath:       outputPath,
-			SizeBefore:       sizeBefore,
-			SizeAfter:        sizeAfter,
-			ResolutionBefore: resBefore,
-			ResolutionAfter:  resAfter,
-		})
+		stats = append(stats, stat)
 	}
 
 	return stats, nil
+}
+
+func (s ConverterService) ConvertFile(
+	ctx context.Context,
+	cfg domain.Config,
+	name, inputPath, outputPath string,
+	onEncoded func(outputPath string),
+) (domain.FileStat, error) {
+	if err := s.store.MkdirAll(filepath.Dir(outputPath)); err != nil {
+		return domain.FileStat{}, fmt.Errorf("не удалось создать папку для выходного файла: %v", err)
+	}
+
+	resBefore := s.prober.Resolution(ctx, inputPath)
+
+	sizeBefore, err := s.store.SizeMB(inputPath)
+	if err != nil {
+		return domain.FileStat{}, fmt.Errorf("не удалось получить статистику файла %v", err)
+	}
+
+	if err := s.encoder.Encode(ctx, cfg, inputPath, outputPath); err != nil {
+		return domain.FileStat{}, fmt.Errorf("err: %v", err)
+	}
+
+	if onEncoded != nil {
+		onEncoded(outputPath)
+	}
+
+	resAfter := s.prober.Resolution(ctx, outputPath)
+
+	sizeAfter, err := s.store.SizeMB(outputPath)
+	if err != nil {
+		return domain.FileStat{}, fmt.Errorf("не удалось получить размер сжатого файла %v", err)
+	}
+
+	return domain.FileStat{
+		Name:             name,
+		OutputPath:       outputPath,
+		SizeBefore:       sizeBefore,
+		SizeAfter:        sizeAfter,
+		ResolutionBefore: resBefore,
+		ResolutionAfter:  resAfter,
+	}, nil
 }

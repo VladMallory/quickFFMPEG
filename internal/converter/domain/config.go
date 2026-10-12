@@ -13,6 +13,9 @@ type Config struct {
 	PerFps          bool   `json:"perFps"`
 	FilmGrain       int    `json:"film_grain"`
 	BitDepth        int    `json:"bit_depth"`
+	Security        string `json:"security"`
+	CryptIn         string `json:"crypt_in"`
+	CryptOut        string `json:"crypt_out"`
 }
 
 func (c *Config) ApplyDefaults() error {

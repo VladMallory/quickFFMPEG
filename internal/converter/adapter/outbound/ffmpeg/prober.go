@@ -30,6 +30,10 @@ func (a *ProberAdapter) Resolution(ctx context.Context, path string) string {
 		return "N/A"
 	}
 
+	return parseResolution(out)
+}
+
+func parseResolution(out []byte) string {
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	if len(lines) < 2 {
 		return "N/A"

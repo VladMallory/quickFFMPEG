@@ -61,6 +61,21 @@ func Load() domain.Config {
 		10, "битность видео: 8 или 10",
 	)
 
+	flag.StringVar(
+		&cfg.Security, "security",
+		"", "профиль воркера из workers.json: шифровать и кодировать удаленно",
+	)
+
+	flag.StringVar(
+		&cfg.CryptIn, "crypt-in",
+		"", "режим воркера: входной шифрованный файл",
+	)
+
+	flag.StringVar(
+		&cfg.CryptOut, "crypt-out",
+		"", "режим воркера: выходной шифрованный файл",
+	)
+
 	flag.Parse()
 
 	if err := cfg.ApplyDefaults(); err != nil {

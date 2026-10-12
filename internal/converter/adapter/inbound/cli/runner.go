@@ -44,6 +44,23 @@ func (r *Runner) Run(ctx context.Context) {
 		log.Fatal(err)
 	}
 
+	r.printReport(stats)
+}
+
+func (r *Runner) RunSingle(ctx context.Context, name, inputPath, outputPath string) {
+	r.printBuildTime()
+
+	stat, err := r.service.ConvertFile(ctx, r.cfg, name, inputPath, outputPath, func(out string) {
+		fmt.Fprintf(r.stdout, "✅ Файл успешно сохранен в: %s\n", out)
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	r.printReport([]domain.FileStat{stat})
+}
+
+func (r *Runner) printReport(stats []domain.FileStat) {
 	fmt.Fprintln(r.stdout, "\n🎉 Все файлы обработаны!")
 	if len(stats) > 0 {
 		fmt.Fprintln(r.stdout, "Статистика сжатия")

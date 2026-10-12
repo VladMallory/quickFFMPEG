@@ -28,7 +28,7 @@ func (a *EncoderAdapter) Encode(
 	inputPath, outputPath string,
 ) error {
 
-	args := domain.BuildArgs(cfg, inputPath, outputPath)
+	args := domain.BuildArgs(cfg, inputPath, outputPath, nil, nil)
 
 	return a.runner.Run(ctx, a.stdout, a.stderr, "ffmpeg", args...)
 }

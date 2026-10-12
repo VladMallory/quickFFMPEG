@@ -6,12 +6,16 @@ import (
 	"strings"
 )
 
-func BuildArgs(cfg Config, inputPath, outputPath string) []string {
+func BuildArgs(cfg Config, inputPath, outputPath string, dec, enc *Crypt) []string {
+	args := []string{}
 
-	args := []string{
-		"-i", inputPath,
-		"-crf", cfg.CRF,
+	inURL := inputPath
+	if dec != nil {
+		args = append(args, "-decryption_key", dec.Key, "-decryption_iv", dec.IV)
+		inURL = "crypto:file://" + inputPath
 	}
+
+	args = append(args, "-i", inURL, "-crf", cfg.CRF)
 
 	switch cfg.Codec {
 	case "265":
@@ -66,7 +70,17 @@ func BuildArgs(cfg Config, inputPath, outputPath string) []string {
 		)
 	}
 
-	args = append(args, outputPath)
+	outURL := outputPath
+	if enc != nil {
+		args = append(args,
+			"-movflags", "frag_keyframe+empty_moov",
+			"-f", "mp4",
+			"-encryption_key", enc.Key,
+			"-encryption_iv", enc.IV,
+		)
+		outURL = "crypto:file://" + outputPath
+	}
+	args = append(args, outURL)
 
 	return args
 }
