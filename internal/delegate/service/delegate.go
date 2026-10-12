@@ -281,7 +281,7 @@ func (s DelegateService) prepare(
 	if err != nil {
 		return "", fmt.Errorf("воркер недоступен: %v", err)
 	}
-	if !strings.Contains(machine, "x86_64") {
+	if !worker.Local && !strings.Contains(machine, "x86_64") {
 		return "", fmt.Errorf("воркер должен быть linux x86_64, а там %s", machine)
 	}
 
@@ -307,17 +307,19 @@ func (s DelegateService) prepare(
 	}
 
 	binRemote := path.Join(dir, "bin", "quickffmpeg")
-	has, err := shell.HasFile(ctx, binRemote)
-	if err != nil {
-		return "", err
-	}
-	if !has {
-		if _, err := os.Stat(s.binLocal); err != nil {
-			return "", fmt.Errorf("на воркере нет бинарника, собери: make build-worker")
+	if !worker.Local {
+		has, err := shell.HasFile(ctx, binRemote)
+		if err != nil {
+			return "", err
 		}
-		fmt.Fprintln(s.stdout, "Заливаю бинарник на воркер:", binRemote)
-		if err := shell.Put(ctx, s.binLocal, binRemote); err != nil {
-			return "", fmt.Errorf("не удалось залить бинарник: %v", err)
+		if !has {
+			if _, err := os.Stat(s.binLocal); err != nil {
+				return "", fmt.Errorf("на воркере нет бинарника, собери: make build-worker")
+			}
+			fmt.Fprintln(s.stdout, "Заливаю бинарник на воркер:", binRemote)
+			if err := shell.Put(ctx, s.binLocal, binRemote); err != nil {
+				return "", fmt.Errorf("не удалось залить бинарник: %v", err)
+			}
 		}
 	}
 

@@ -14,6 +14,7 @@ type WorkerProfile struct {
 	Dir   string `json:"dir"`
 	Power int    `json:"power"`
 	Slots int    `json:"slots"`
+	Local bool   `json:"local"`
 }
 
 type WorkerLoad struct {

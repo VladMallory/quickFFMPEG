@@ -16,6 +16,7 @@ import (
 	converterdomain "github.com/VladMallory/quickFFMPEG/internal/converter/domain"
 	convertersvc "github.com/VladMallory/quickFFMPEG/internal/converter/service"
 	delegatecli "github.com/VladMallory/quickFFMPEG/internal/delegate/adapter/inbound/cli"
+	localadapter "github.com/VladMallory/quickFFMPEG/internal/delegate/adapter/outbound/local"
 	sshadapter "github.com/VladMallory/quickFFMPEG/internal/delegate/adapter/outbound/ssh"
 	delegatedomain "github.com/VladMallory/quickFFMPEG/internal/delegate/domain"
 	delegatesvc "github.com/VladMallory/quickFFMPEG/internal/delegate/service"
@@ -124,7 +125,11 @@ func setupDelegate(cfg converterdomain.Config) func(context.Context) {
 			log.Fatal(err)
 		}
 		workers = append(workers, worker)
-		shells = append(shells, sshadapter.New(worker, execRunner, os.Stdout, os.Stderr))
+		if worker.Local {
+			shells = append(shells, localadapter.New(os.Stdout, os.Stderr))
+		} else {
+			shells = append(shells, sshadapter.New(worker, execRunner, os.Stdout, os.Stderr))
+		}
 	}
 
 	prober := ffmpeg.NewProber(execRunner)
