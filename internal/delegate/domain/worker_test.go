@@ -7,6 +7,21 @@ import (
 	converterdomain "github.com/VladMallory/quickFFMPEG/internal/converter/domain"
 )
 
+func TestAssignSegments(t *testing.T) {
+	got := AssignSegments([]int64{6, 5, 4}, []int{1, 1})
+	want := []int{0, 1, 1}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}
+
+func TestAssignSegmentsWeighted(t *testing.T) {
+	got := AssignSegments([]int64{8, 4, 4}, []int{3, 1})
+	want := []int{0, 1, 0}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}
 func TestRemoteArgs(t *testing.T) {
 	cfg := converterdomain.Config{
 		Codec:      "av1",

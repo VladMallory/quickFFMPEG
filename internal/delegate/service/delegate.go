@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	converterdomain "github.com/VladMallory/quickFFMPEG/internal/converter/domain"
 	delegatedomain "github.com/VladMallory/quickFFMPEG/internal/delegate/domain"
@@ -30,7 +31,7 @@ type RemoteShell interface {
 	Get(ctx context.Context, remote, local string) error
 	Remove(ctx context.Context, remotes ...string) error
 	RunJob(ctx context.Context, workdir string, env map[string]string, bin string, args []string) error
-	CheckFFmpeg(ctx context.Context) error
+	EnsureFFmpeg(ctx context.Context) error
 	Sha256(ctx context.Context, remote string) (string, error)
 }
 
@@ -99,14 +100,49 @@ func (s DelegateService) DelegateAll(
 		return nil, fmt.Errorf("для --farm нужно минимум два профиля в --security")
 	}
 
-	dirs := make([]string, len(workers))
-	for k, w := range workers {
-		dir, err := s.prepare(ctx, s.shells[k], w)
-		if err != nil {
-			return nil, err
-		}
-		dirs[k] = dir
+	type prepared struct {
+		idx int
+		dir string
+		err error
 	}
+	resCh := make(chan prepared, len(workers))
+	var pwg sync.WaitGroup
+	for k, w := range workers {
+		pwg.Add(1)
+		go func(k int, w delegatedomain.WorkerProfile) {
+			defer pwg.Done()
+			dir, err := s.prepare(ctx, s.shells[k], w)
+			resCh <- prepared{idx: k, dir: dir, err: err}
+		}(k, w)
+	}
+	pwg.Wait()
+	close(resCh)
+	byIdx := make(map[int]prepared, len(workers))
+	for r := range resCh {
+		byIdx[r.idx] = r
+	}
+	dirs := make([]string, 0, len(workers))
+	shells := make([]RemoteShell, 0, len(workers))
+	alive := make([]delegatedomain.WorkerProfile, 0, len(workers))
+	var lastErr error
+	for k, w := range workers {
+		r := byIdx[k]
+		if r.err != nil {
+			fmt.Fprintf(s.stdout, "Воркер %s недоступен, пропускаю: %v\n", w.Name, r.err)
+			lastErr = r.err
+			continue
+		}
+		dirs = append(dirs, r.dir)
+		shells = append(shells, s.shells[k])
+		alive = append(alive, w)
+	}
+	if len(alive) == 0 {
+		if lastErr == nil {
+			lastErr = fmt.Errorf("нет воркеров")
+		}
+		return nil, lastErr
+	}
+	workers = alive
 
 	compressedDir := filepath.Join(cfg.Path, "compressed")
 	if err := s.store.MkdirAll(compressedDir); err != nil {
@@ -144,13 +180,13 @@ func (s DelegateService) DelegateAll(
 
 		var stat converterdomain.FileStat
 		if cfg.Farm {
-			stat, err = s.farmFile(ctx, cfg, dirs, tmpDir, compressedDir, i, name, inputPath)
+			stat, err = s.farmFile(ctx, cfg, workers, shells, dirs, tmpDir, compressedDir, i, name, inputPath)
 		} else {
 			k := i % len(workers)
 			base := strings.TrimSuffix(name, filepath.Ext(name))
 			finalPath := filepath.Join(compressedDir, base+".mp4")
 			stat, err = s.delegateFile(
-				ctx, cfg, s.shells[k], dirs[k], tmpDir,
+				ctx, cfg, shells[k], dirs[k], tmpDir,
 				fmt.Sprintf("job%03d", i), name, inputPath, finalPath,
 			)
 		}
@@ -171,6 +207,7 @@ func (s DelegateService) prepare(
 	shell RemoteShell,
 	worker delegatedomain.WorkerProfile,
 ) (string, error) {
+	start := time.Now()
 	machine, err := shell.UnameM(ctx)
 	if err != nil {
 		return "", fmt.Errorf("воркер недоступен: %v", err)
@@ -179,8 +216,8 @@ func (s DelegateService) prepare(
 		return "", fmt.Errorf("воркер должен быть linux x86_64, а там %s", machine)
 	}
 
-	if err := shell.CheckFFmpeg(ctx); err != nil {
-		return "", fmt.Errorf("на воркере нет ffmpeg: %v", err)
+	if err := shell.EnsureFFmpeg(ctx); err != nil {
+		return "", err
 	}
 
 	home, err := shell.Home(ctx)
@@ -215,6 +252,7 @@ func (s DelegateService) prepare(
 		}
 	}
 
+	fmt.Fprintf(s.stdout, "Воркер %s готов за %s\n", worker.Name, time.Since(start).Round(time.Second))
 	return dir, nil
 }
 
@@ -298,6 +336,8 @@ func (s DelegateService) delegateFile(
 func (s DelegateService) farmFile(
 	ctx context.Context,
 	cfg converterdomain.Config,
+	workers []delegatedomain.WorkerProfile,
+	shells []RemoteShell,
 	dirs []string,
 	tmpDir, compressedDir string,
 	i int,
@@ -323,7 +363,29 @@ func (s DelegateService) farmFile(
 	if err != nil {
 		return converterdomain.FileStat{}, fmt.Errorf("не удалось нарезать видео: %v", err)
 	}
-	fmt.Fprintf(s.stdout, "Ферма: %s нарезан на %d кусков\n", name, len(segs))
+
+	sizes := make([]int64, len(segs))
+	for j, segPath := range segs {
+		fi, err := os.Stat(segPath)
+		if err != nil {
+			return converterdomain.FileStat{}, err
+		}
+		sizes[j] = fi.Size()
+	}
+	powers := make([]int, len(workers))
+	for k, w := range workers {
+		powers[k] = w.Power
+	}
+	assign := delegatedomain.AssignSegments(sizes, powers)
+	queues := make([][]int, len(workers))
+	for j, k := range assign {
+		queues[k] = append(queues[k], j)
+	}
+	for k, w := range workers {
+		if len(queues[k]) > 0 {
+			fmt.Fprintf(s.stdout, "Ферма: %s берет куски %v\n", w.Name, queues[k])
+		}
+	}
 
 	audioLocal := ""
 	hasAudio, err := s.cutter.HasAudio(ctx, inputPath)
@@ -337,36 +399,57 @@ func (s DelegateService) farmFile(
 	}
 
 	results := make([]string, len(segs))
-	sem := make(chan struct{}, len(s.shells))
 	ctx2, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(segs))
 
-	for j, segPath := range segs {
+	for k := range workers {
+		queue := queues[k]
+		if len(queue) == 0 {
+			continue
+		}
+		slots := workers[k].Slots
+		if slots <= 0 {
+			slots = 1
+		}
 		wg.Add(1)
-		go func(j int, segPath string) {
+		go func(k int, queue []int) {
 			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-				defer func() { <-sem }()
-			case <-ctx2.Done():
-				return
+			sem := make(chan struct{}, slots)
+			var inner sync.WaitGroup
+			for _, j := range queue {
+				select {
+				case <-ctx2.Done():
+					return
+				default:
+				}
+				sem <- struct{}{}
+				inner.Add(1)
+				go func(j int) {
+					defer inner.Done()
+					defer func() { <-sem }()
+					segStart := time.Now()
+					tag := fmt.Sprintf("job%03ds%02d", i, j)
+					final := filepath.Join(segDir, fmt.Sprintf("dec%02d.mp4", j))
+					_, err := s.delegateFile(
+						ctx2, cfg, shells[k], dirs[k], tmpDir,
+						tag, filepath.Base(segs[j]), segs[j], final,
+					)
+					if err != nil {
+						errCh <- fmt.Errorf("сегмент %d: %v", j, err)
+						cancel()
+						return
+					}
+					results[j] = final
+					fmt.Fprintf(
+						s.stdout, "Ферма: кусок %d готов за %s (%s)\n",
+						j, time.Since(segStart).Round(time.Second), workers[k].Name,
+					)
+				}(j)
 			}
-			k := j % len(s.shells)
-			tag := fmt.Sprintf("job%03ds%02d", i, j)
-			final := filepath.Join(segDir, fmt.Sprintf("dec%02d.mp4", j))
-			_, err := s.delegateFile(
-				ctx2, cfg, s.shells[k], dirs[k], tmpDir,
-				tag, filepath.Base(segPath), segPath, final,
-			)
-			if err != nil {
-				errCh <- fmt.Errorf("сегмент %d: %v", j, err)
-				cancel()
-				return
-			}
-			results[j] = final
-		}(j, segPath)
+			inner.Wait()
+		}(k, queue)
 	}
 	wg.Wait()
 	close(errCh)

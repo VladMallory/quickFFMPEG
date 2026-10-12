@@ -104,6 +104,10 @@ func setupDelegate(cfg converterdomain.Config) func(context.Context) {
 	if len(names) == 0 {
 		log.Fatal("пустой --security")
 	}
+	wpath, err := config.WorkersFile(cfg.Workers)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	workers := make([]delegatedomain.WorkerProfile, 0, len(names))
 	shells := make([]delegatesvc.RemoteShell, 0, len(names))
@@ -111,7 +115,7 @@ func setupDelegate(cfg converterdomain.Config) func(context.Context) {
 	execRunner := execplatform.New()
 
 	for _, n := range names {
-		worker, err := config.LoadWorker(n)
+		worker, err := config.LoadWorkerAt(wpath, n)
 		if err != nil {
 			log.Fatal(err)
 		}

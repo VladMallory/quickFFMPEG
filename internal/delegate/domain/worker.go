@@ -7,10 +7,46 @@ import (
 )
 
 type WorkerProfile struct {
-	Host string `json:"host"`
-	Port int    `json:"port"`
-	User string `json:"user"`
-	Dir  string `json:"dir"`
+	Name  string `json:"-"`
+	Host  string `json:"host"`
+	Port  int    `json:"port"`
+	User  string `json:"user"`
+	Dir   string `json:"dir"`
+	Power int    `json:"power"`
+	Slots int    `json:"slots"`
+}
+
+func AssignSegments(sizes []int64, powers []int) []int {
+	assign := make([]int, len(sizes))
+	loads := make([]float64, len(powers))
+	for _, idx := range orderDesc(sizes) {
+		best := 0
+		for w := 1; w < len(powers); w++ {
+			if loads[w] < loads[best] {
+				best = w
+			}
+		}
+		assign[idx] = best
+		power := powers[best]
+		if power <= 0 {
+			power = 1
+		}
+		loads[best] += float64(sizes[idx]) / float64(power)
+	}
+	return assign
+}
+
+func orderDesc(sizes []int64) []int {
+	idx := make([]int, len(sizes))
+	for i := range idx {
+		idx[i] = i
+	}
+	for i := 1; i < len(idx); i++ {
+		for j := i; j > 0 && sizes[idx[j]] > sizes[idx[j-1]]; j-- {
+			idx[j], idx[j-1] = idx[j-1], idx[j]
+		}
+	}
+	return idx
 }
 
 func RemoteEnv(dec, enc converterdomain.Crypt) map[string]string {

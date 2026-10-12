@@ -9,14 +9,30 @@ import (
 	delegatedomain "github.com/VladMallory/quickFFMPEG/internal/delegate/domain"
 )
 
-func LoadWorker(name string) (delegatedomain.WorkerProfile, error) {
-	path, err := workerFile()
-	if err != nil {
-		return delegatedomain.WorkerProfile{}, err
+func WorkersFile(explicit string) (string, error) {
+	if explicit != "" {
+		return explicit, nil
 	}
+	if _, err := os.Stat("workers.json"); err == nil {
+		abs, err := filepath.Abs("workers.json")
+		if err != nil {
+			return "", err
+		}
+		return abs, nil
+	}
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "quickffmpeg", "workers.json"), nil
+}
+
+func LoadWorkerAt(path, name string) (delegatedomain.WorkerProfile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return delegatedomain.WorkerProfile{}, fmt.Errorf("не читается %s: %v", path, err)
+		return delegatedomain.WorkerProfile{}, fmt.Errorf(
+			"не читается %s (укажи --workers или положи workers.json рядом): %v", path, err,
+		)
 	}
 	var all map[string]delegatedomain.WorkerProfile
 	if err := json.Unmarshal(data, &all); err != nil {
@@ -35,13 +51,12 @@ func LoadWorker(name string) (delegatedomain.WorkerProfile, error) {
 	if w.Dir == "" {
 		w.Dir = "~/qff"
 	}
-	return w, nil
-}
-
-func workerFile() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
+	if w.Power <= 0 {
+		w.Power = 1
 	}
-	return filepath.Join(dir, "quickffmpeg", "workers.json"), nil
+	if w.Slots <= 0 {
+		w.Slots = 1
+	}
+	w.Name = name
+	return w, nil
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -138,9 +139,105 @@ func (a *Adapter) RunJob(
 	return a.runner.Run(ctx, a.stdout, a.stderr, "ssh", sshArgs...)
 }
 
-func (a *Adapter) CheckFFmpeg(ctx context.Context) error {
-	args := append(a.sshBase(), a.dst(), "command -v ffmpeg >/dev/null")
-	return a.runner.Run(ctx, a.stdout, a.stderr, "ssh", args...)
+func (a *Adapter) EnsureFFmpeg(ctx context.Context) error {
+	ok, err := a.checkFFmpeg(ctx)
+	if err != nil {
+		return fmt.Errorf("воркер недоступен: %v", err)
+	}
+	if ok {
+		return nil
+	}
+	fmt.Fprintln(a.stdout, "Ставлю ffmpeg на воркере...")
+	sudo, err := a.sudoPrefix(ctx)
+	if err != nil {
+		return err
+	}
+	managers := []string{"apt-get", "dnf", "yum", "pacman", "apk", "zypper"}
+	installs := []string{
+		"apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg",
+		"dnf install -y ffmpeg",
+		"yum install -y ffmpeg",
+		"pacman -Sy --noconfirm ffmpeg",
+		"apk add --no-cache ffmpeg",
+		"zypper --non-interactive install ffmpeg",
+	}
+	for i, mgr := range managers {
+		if err := a.runQuiet(ctx, "command -v "+mgr+" >/dev/null"); err != nil {
+			continue
+		}
+		if err := a.runQuiet(ctx, sudo+installs[i]); err != nil {
+			continue
+		}
+		if ok, _ := a.checkFFmpeg(ctx); ok {
+			return nil
+		}
+	}
+	if err := a.installStatic(ctx, sudo); err != nil {
+		return fmt.Errorf("не удалось поставить ffmpeg на воркере (нужен root или sudo без пароля): %v", err)
+	}
+	if ok, _ := a.checkFFmpeg(ctx); ok {
+		return nil
+	}
+	return fmt.Errorf("не удалось поставить ffmpeg на воркере (нужен root или sudo без пароля)")
+}
+
+func (a *Adapter) checkFFmpeg(ctx context.Context) (bool, error) {
+	out, err := a.sshOutput(ctx, "ffmpeg -version 2>/dev/null | head -n 1")
+	if err != nil {
+		return false, err
+	}
+	return ffmpegMajor(out) >= 5, nil
+}
+
+func ffmpegMajor(line string) int {
+	const prefix = "ffmpeg version "
+	i := strings.Index(line, prefix)
+	if i < 0 {
+		return 0
+	}
+	rest := line[i+len(prefix):]
+	start := strings.IndexFunc(rest, func(c rune) bool { return c >= '0' && c <= '9' })
+	if start < 0 {
+		return 0
+	}
+	digits := ""
+	for _, c := range rest[start:] {
+		if c < '0' || c > '9' {
+			break
+		}
+		digits += string(c)
+	}
+	n, _ := strconv.Atoi(digits)
+	return n
+}
+
+func (a *Adapter) sudoPrefix(ctx context.Context) (string, error) {
+	out, err := a.sshOutput(ctx, "id -u")
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(out) == "0" {
+		return "", nil
+	}
+	return "sudo -n ", nil
+}
+
+func (a *Adapter) installStatic(ctx context.Context, sudo string) error {
+	const url = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+	dl := "command -v curl >/dev/null && curl -fsSL -o /tmp/ffstatic.tar.xz " + url +
+		" || wget -q -O /tmp/ffstatic.tar.xz " + url
+	if err := a.runQuiet(ctx, dl); err != nil {
+		return err
+	}
+	unpack := "tar -xJf /tmp/ffstatic.tar.xz -C /tmp" +
+		" && cp /tmp/ffmpeg-*-amd64-static/ffmpeg /usr/local/bin/ffmpeg" +
+		" && rm -rf /tmp/ffstatic.tar.xz /tmp/ffmpeg-*-amd64-static"
+	return a.runQuiet(ctx, sudo+unpack)
+}
+
+func (a *Adapter) runQuiet(ctx context.Context, remoteCmd string) error {
+	args := append(a.sshBase(), a.dst(), remoteCmd)
+	return a.runner.Run(ctx, io.Discard, a.stderr, "ssh", args...)
 }
 
 func (a *Adapter) Sha256(ctx context.Context, remote string) (string, error) {

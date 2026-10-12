@@ -86,6 +86,11 @@ func Load() domain.Config {
 		60, "целевая длина куска в секундах для --farm",
 	)
 
+	flag.StringVar(
+		&cfg.Workers, "workers",
+		"", "путь к workers.json (по умолчанию ./workers.json или каталог конфигов)",
+	)
+
 	flag.Parse()
 
 	if err := cfg.ApplyDefaults(); err != nil {
