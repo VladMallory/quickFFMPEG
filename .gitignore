@@ -76,3 +76,5 @@ private.key
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+workers.json
