@@ -63,7 +63,7 @@ private.key
 *.code-workspace
 
 
-./quickFFmpeg
+/quickFFmpeg
 .*quickFFmpeg
 
 # ##########################################
