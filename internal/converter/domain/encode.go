@@ -44,7 +44,10 @@ func BuildArgs(cfg Config, inputPath, outputPath string, dec, enc *Crypt) []stri
 		box := cfg.Resize * 16 / 9
 		filters = append(
 			filters,
-			fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease", box, box),
+			fmt.Sprintf(
+				"scale='min(%d,iw)':'min(%d,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2",
+				box, box,
+			),
 		)
 	}
 	if len(filters) > 0 {
