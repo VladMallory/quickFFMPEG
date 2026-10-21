@@ -76,6 +76,11 @@ func Load() domain.Config {
 		"", "режим воркера: выходной шифрованный файл",
 	)
 
+	flag.BoolVar(
+		&cfg.Recursive, "r",
+		false, "рекурсивно обходить все подпапки и сжимать видео в каждой из них",
+	)
+
 	flag.Parse()
 
 	if err := cfg.ApplyDefaults(); err != nil {

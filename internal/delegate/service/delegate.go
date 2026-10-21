@@ -37,6 +37,7 @@ type SourceStore interface {
 	MkdirAll(path string) error
 	ListFiles(dir string) ([]string, error)
 	IsDir(path string) bool
+	VideoDirs(root string) ([]string, error)
 	SizeMB(path string) (float64, error)
 	SaveSettings(dir string, cfg converterdomain.Config) error
 }
@@ -90,13 +91,12 @@ func (s DelegateService) DelegateAll(
 		return nil, err
 	}
 
-	compressedDir := filepath.Join(cfg.Path, "compressed")
-	if err := s.store.MkdirAll(compressedDir); err != nil {
-		return nil, fmt.Errorf("Не удалось создать папку для сжатых файлов: %v", err)
-	}
-
-	if err := s.store.SaveSettings(compressedDir, cfg); err != nil {
-		return nil, err
+	dirs := []string{cfg.Path}
+	if cfg.Recursive {
+		dirs, err = s.store.VideoDirs(cfg.Path)
+		if err != nil {
+			return nil, fmt.Errorf("Ошибка чтения директории: %v", err)
+		}
 	}
 
 	tmpDir, err := os.MkdirTemp("", "qffenc")
@@ -104,11 +104,6 @@ func (s DelegateService) DelegateAll(
 		return nil, err
 	}
 	defer os.RemoveAll(tmpDir)
-
-	names, err := s.store.ListFiles(cfg.Path)
-	if err != nil {
-		return nil, fmt.Errorf("Ошибка чтения директории: %v", err)
-	}
 
 	var stats []converterdomain.FileStat
 
@@ -118,23 +113,49 @@ func (s DelegateService) DelegateAll(
 	}
 	fmt.Fprintln(s.stdout, "Прогон:", runID)
 
-	for i, name := range names {
-		inputPath := filepath.Join(cfg.Path, name)
-
-		if s.store.IsDir(inputPath) {
-			continue
+	jobIndex := 0
+	for _, currentDir := range dirs {
+		compressedDir := filepath.Join(currentDir, "compressed")
+		if err := s.store.MkdirAll(compressedDir); err != nil {
+			return nil, fmt.Errorf("Не удалось создать папку для сжатых файлов: %v", err)
 		}
 
-		ext := strings.ToLower(filepath.Ext(inputPath))
-		if !converterdomain.ValidExtensions[ext] {
-			continue
-		}
-
-		stat, err := s.delegateFile(ctx, cfg, dir, tmpDir, compressedDir, runID, i, name, inputPath, onEncoded)
-		if err != nil {
+		if err := s.store.SaveSettings(compressedDir, cfg.ForPath(currentDir)); err != nil {
 			return nil, err
 		}
-		stats = append(stats, stat)
+
+		names, err := s.store.ListFiles(currentDir)
+		if err != nil {
+			return nil, fmt.Errorf("Ошибка чтения директории: %v", err)
+		}
+
+		for _, name := range names {
+			inputPath := filepath.Join(currentDir, name)
+
+			if s.store.IsDir(inputPath) {
+				continue
+			}
+
+			ext := strings.ToLower(filepath.Ext(inputPath))
+			if !converterdomain.ValidExtensions[ext] {
+				continue
+			}
+
+			displayName, err := filepath.Rel(cfg.Path, inputPath)
+			if err != nil {
+				displayName = name
+			}
+
+			stat, err := s.delegateFile(
+				ctx, cfg, dir, tmpDir, compressedDir, runID,
+				jobIndex, displayName, inputPath, onEncoded,
+			)
+			if err != nil {
+				return nil, err
+			}
+			stats = append(stats, stat)
+			jobIndex++
+		}
 	}
 
 	return stats, nil

@@ -16,6 +16,7 @@ type Config struct {
 	Security        string `json:"security"`
 	CryptIn         string `json:"crypt_in"`
 	CryptOut        string `json:"crypt_out"`
+	Recursive       bool   `json:"recursive"`
 }
 
 func (c *Config) ApplyDefaults() error {
@@ -46,4 +47,9 @@ func (c *Config) ApplyDefaults() error {
 	}
 
 	return nil
+}
+
+func (c Config) ForPath(path string) Config {
+	c.Path = path
+	return c
 }
